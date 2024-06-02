@@ -1,0 +1,4 @@
+# TELEGRAM FORWADER
+
+forwades messages from configured chats to configured main channel.
+To start create config.env file, fill with information
