@@ -6,6 +6,7 @@ from telethon.tl.types import PeerChannel
 from telethon.errors import ChannelPrivateError
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
+from easygoogletranslate import EasyGoogleTranslate
 from pathlib import Path
 from deep_translator import GoogleTranslator
 from time import sleep
@@ -23,11 +24,13 @@ owner_id = int(os.environ.get('OWNER_ID'))
 last_message = None
 last_adv = False
 translator = GoogleTranslator(source="auto", target='iw')
+backup_translator = EasyGoogleTranslate()
 
 blocked_message = [
     'צבע אדום',
     'גרם',
-    'היכנסו למרחב המוגן'
+    'היכנסו למרחב המוגן',
+    'חדירת כלי טיס עוין'
 ]
 
 arab_channels = [
@@ -154,7 +157,11 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     msg = url_pattern.sub('', message.message)
     if (await check_if_message_sent(target_chat_id, msg)):
         return
-    msg = translator.translate(msg)
+    try:
+        msg = translator.translate(msg)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        msg = backup_translator.translate(msg, 'iw')
     link = await get_message_link(message.chat_id, message.id)
     msg += f'\n\n{link}'
     if (message.file != None):
