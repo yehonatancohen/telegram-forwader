@@ -135,13 +135,13 @@ async def handler(event):
 
 @client.on(events.NewMessage(chats=smart_channels))
 async def handler(event):
-    global last_adv
-    if ("שיווקי" in event.message.message):
-        last_adv = True
-        return
-    if last_adv or is_blocked_message(event.message.message):
-        last_adv = False
-        return
+    #global last_adv
+    #if ("שיווקי" in event.message.message):
+    #    last_adv = True
+    #    return
+    #if last_adv or is_blocked_message(event.message.message):
+    #    last_adv = False
+    #    return
     message = event.message
     await send_message_to_telegram_chat(message, smart_chat)
 
@@ -155,8 +155,6 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     global translator
     url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
     msg = url_pattern.sub('', message.message)
-    if (await check_if_message_sent(target_chat_id, msg)):
-        return
     try:
         msg = translator.translate(msg)
     except Exception as e:
@@ -164,9 +162,12 @@ async def send_message_to_telegram_chat(message, target_chat_id):
         msg = backup_translator.translate(msg, 'iw')
     link = await get_message_link(message.chat_id, message.id)
     msg += f'\n\n{link}'
+    if (await check_if_message_sent(target_chat_id, msg)):
+        print("Message already sent")
+        return
     if (message.file != None):
         try:
-            await client.send_file(entity=target_chat_id, file=message.file.media, caption=msg)
+            await client.send_file(entity=target_chat_id, file=message.media, caption=msg)
         except Exception as e:
             if isinstance(e, MediaCaptionTooLongError):
                 await client.send_file(entity=target_chat_id, file=message.file.media)
@@ -213,7 +214,6 @@ async def get_message_link(channel_username, message_id):
     
 async def check_if_message_sent(channel_username, message_to_send):
     await client.start(phone)
-
     try:
         channel = await client.get_entity(channel_username)
         history = await client(GetHistoryRequest(
@@ -226,13 +226,9 @@ async def check_if_message_sent(channel_username, message_to_send):
             add_offset=0,
             hash=0
         ))
-        message_lines = message_to_send.strip().split('\n')
-        message_without_last_line = '\n'.join(message_lines[:-1])
         for message in history.messages:
             if message.message:
-                message_lines_history = message.message.strip().split('\n')
-                message_without_last_line_history = '\n'.join(message_lines_history[:-1])
-                if message_without_last_line == message_without_last_line_history:
+                if message_to_send == message.message:
                     return True
         return False
     except Exception as e:
