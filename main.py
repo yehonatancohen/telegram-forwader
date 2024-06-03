@@ -3,7 +3,7 @@ from telethon import errors
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import GetHistoryRequest
 from telethon.tl.types import PeerChannel
-from telethon.errors import ChannelPrivateError
+from telethon.errors import ChannelPrivateError, MediaCaptionTooLongError
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 from easygoogletranslate import EasyGoogleTranslate
@@ -165,7 +165,12 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     link = await get_message_link(message.chat_id, message.id)
     msg += f'\n\n{link}'
     if (message.file != None):
-        await client.send_file(entity=target_chat_id, file=message.file.media, caption=msg)
+        try:
+            await client.send_file(entity=target_chat_id, file=message.file.media, caption=msg)
+        except Exception as e:
+            if isinstance(e, MediaCaptionTooLongError):
+                await client.send_file(entity=target_chat_id, file=message.file.media)
+                await client.send_message(entity=target_chat_id, message=msg, link_preview=False)
     else:
         await client.send_message(entity=target_chat_id, message=msg, link_preview=False)
 
