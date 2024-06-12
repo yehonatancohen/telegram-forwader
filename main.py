@@ -20,7 +20,6 @@ phone = os.getenv('PHONE_NUMBER')
 arabs_chat = int(os.getenv('ARABS'))
 smart_chat = int(os.getenv('SMART'))
 owner_id = int(os.getenv('OWNER_ID'))
-code = os.getenv('CODE')
 
 last_message = None
 last_adv = False
@@ -73,8 +72,7 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
 client = TelegramClient('bot', api_id, api_hash)
-client.start(phone=phone, code_callback=lambda: code)
-client.run_until_disconnected()
+client.start(phone=phone)
 
 def load_channels():
     with open('arab_channels.txt', 'r') as f:
@@ -239,3 +237,5 @@ async def check_if_message_sent(channel_username, message_to_send):
     except Exception as e:
         print(f"An error occurred: {e}")
         return False
+    
+client.run_until_disconnected()

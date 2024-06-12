@@ -21,22 +21,28 @@ jobs:
           pip install -r requirements.txt
       - name: Decrypt session file
         env:
-          ENCRYPTED_SESSION_FILE: ${{ secrets.ENCRYPTED_SESSION_FILE }}
-          ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          ENCRYPTION_PASSPHRASE: ${{ secrets.ENCRYPTION_PASSPHRASE }}
         run: |
-          pip install cryptography
           python -c "
           from cryptography.fernet import Fernet
+          import base64
           import os
 
-          encrypted_session_string = os.getenv('ENCRYPTED_SESSION_FILE')
-          encryption_key = os.getenv('ENCRYPTION_KEY').encode('utf-8')
+          passphrase = os.getenv('ENCRYPTION_PASSPHRASE').encode('utf-8')
 
-          cipher_suite = Fernet(encryption_key)
-          encrypted_session_data = encrypted_session_string.encode('utf-8')
+          # Generate a key from the passphrase
+          key = base64.urlsafe_b64encode(passphrase.ljust(32)[:32])
+          cipher_suite = Fernet(key)
+
+          # Read the encrypted session file
+          with open('session_name.session.enc', 'rb') as enc_file:
+              encrypted_session_data = enc_file.read()
+
+          # Decrypt the session file
           decrypted_session_data = cipher_suite.decrypt(encrypted_session_data)
 
-          with open('bot.session', 'wb') as session_file:
+          # Write the decrypted session file
+          with open('session_name.session', 'wb') as session_file:
               session_file.write(decrypted_session_data)
           "
       - name: Run application

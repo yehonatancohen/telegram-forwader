@@ -1,3 +1,4 @@
+cryptography==40.0.2
 deep_translator==1.11.4
 easygoogletranslate==0.0.4
 python-dotenv==1.0.1
