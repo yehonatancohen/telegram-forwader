@@ -30,19 +30,17 @@ jobs:
 
           passphrase = os.getenv('ENCRYPTION_PASSPHRASE').encode('utf-8')
 
-          # Generate a key from the passphrase
           key = base64.urlsafe_b64encode(passphrase.ljust(32)[:32])
           cipher_suite = Fernet(key)
 
-          # Read the encrypted session file
-          with open('session_name.session.enc', 'rb') as enc_file:
+          with open('session.session.enc', 'rb') as enc_file:
               encrypted_session_data = enc_file.read()
 
           # Decrypt the session file
           decrypted_session_data = cipher_suite.decrypt(encrypted_session_data)
 
           # Write the decrypted session file
-          with open('session_name.session', 'wb') as session_file:
+          with open('bot.session', 'wb') as session_file:
               session_file.write(decrypted_session_data)
           "
       - name: Run application
