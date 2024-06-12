@@ -20,12 +20,6 @@ phone = os.getenv('PHONE_NUMBER')
 arabs_chat = int(os.getenv('ARABS'))
 smart_chat = int(os.getenv('SMART'))
 owner_id = int(os.getenv('OWNER_ID'))
-print(api_id)
-print(api_hash)
-print(phone)
-print(arabs_chat)
-print(smart_chat)
-print(owner_id)
 
 last_message = None
 last_adv = False
@@ -79,6 +73,7 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
 
 client = TelegramClient('bot', api_id, api_hash)
 client.start(phone=phone)
+client.run_until_disconnected()
 
 def load_channels():
     with open('arab_channels.txt', 'r') as f:
