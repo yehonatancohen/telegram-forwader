@@ -20,6 +20,12 @@ phone = os.getenv('PHONE_NUMBER')
 arabs_chat = int(os.getenv('ARABS'))
 smart_chat = int(os.getenv('SMART'))
 owner_id = int(os.getenv('OWNER_ID'))
+print(api_id)
+print(api_hash)
+print(phone)
+print(arabs_chat)
+print(smart_chat)
+print(owner_id)
 
 last_message = None
 last_adv = False
