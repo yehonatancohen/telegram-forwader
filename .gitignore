@@ -4,3 +4,4 @@
 *.session-journal
 clean_data.py
 test.py
+!requirements.txt

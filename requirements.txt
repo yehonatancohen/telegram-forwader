@@ -1,0 +1,5 @@
+deep_translator==1.11.4
+easygoogletranslate==0.0.4
+python-dotenv==1.0.1
+requests==2.28.1
+Telethon==1.35.0
