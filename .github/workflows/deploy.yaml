@@ -24,6 +24,7 @@ jobs:
           ENCRYPTED_SESSION_FILE: ${{ secrets.ENCRYPTED_SESSION_FILE }}
           ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
         run: |
+          pip install cryptography
           python -c "
           from cryptography.fernet import Fernet
           import os
