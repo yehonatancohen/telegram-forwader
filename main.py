@@ -23,6 +23,7 @@ owner_id = int(os.environ.get('OWNER_ID'))
 
 last_message = None
 last_adv = False
+adv_chat = None
 translator = GoogleTranslator(source="auto", target='iw')
 backup_translator = EasyGoogleTranslate()
 
@@ -100,7 +101,6 @@ async def join_channels():
             sleep(e.seconds)
 
 async def check_client_in_channel(channel_username):
-    await client.start(phone)
     try:
         # Get the input entity for the channel
         channel = await client.get_entity(channel_username)
@@ -135,13 +135,17 @@ async def handler(event):
 
 @client.on(events.NewMessage(chats=smart_channels))
 async def handler(event):
-    #global last_adv
-    #if ("שיווקי" in event.message.message):
-    #    last_adv = True
-    #    return
-    #if last_adv or is_blocked_message(event.message.message):
-    #    last_adv = False
-    #    return
+    global last_adv
+    global adv_chat
+    if ("שיווקי" in event.message.message):
+        last_adv = True
+        adv_chat = event.chat_id
+        return
+    if ((last_adv and adv_chat == event.chat_id)):
+        last_adv = False
+        return
+    if (is_blocked_message(event.message.message)):
+        return
     message = event.message
     await send_message_to_telegram_chat(message, smart_chat)
 
@@ -213,7 +217,6 @@ async def get_message_link(channel_username, message_id):
         return message_link
     
 async def check_if_message_sent(channel_username, message_to_send):
-    await client.start(phone)
     try:
         channel = await client.get_entity(channel_username)
         history = await client(GetHistoryRequest(
@@ -234,7 +237,3 @@ async def check_if_message_sent(channel_username, message_to_send):
     except Exception as e:
         print(f"An error occurred: {e}")
         return False
-
-# Start the client and run until disconnected
-client.start()
-client.run_until_disconnected()

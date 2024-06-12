@@ -2,3 +2,5 @@
 *.env
 *.session
 *.session-journal
+clean_data.py
+test.py
