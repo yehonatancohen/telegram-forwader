@@ -14,12 +14,12 @@ from time import sleep
 dotenv_path = Path('./config.env')
 load_dotenv(dotenv_path=dotenv_path)
 
-api_id = int(os.environ('TELEGRAM_API_ID'))
-api_hash = os.environ('TELEGRAM_API_HASH')
-phone = os.environ('PHONE_NUMBER')
-arabs_chat = int(os.environ('ARABS'))
-smart_chat = int(os.environ('SMART'))
-owner_id = int(os.environ('OWNER_ID'))
+api_id = int(os.getenv('TELEGRAM_API_ID'))
+api_hash = os.getenv('TELEGRAM_API_HASH')
+phone = os.getenv('PHONE_NUMBER')
+arabs_chat = int(os.getenv('ARABS'))
+smart_chat = int(os.getenv('SMART'))
+owner_id = int(os.getenv('OWNER_ID'))
 
 last_message = None
 last_adv = False
