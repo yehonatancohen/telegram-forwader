@@ -27,5 +27,6 @@ jobs:
           OWNER_ID: ${{ secrets.OWNER_ID }}
           ARABS: ${{ secrets.ARABS }}
           SMART: ${{ secrets.SMART }}
+          CODE: ${{ secrets.CODE }}
         run: |
           python main.py

@@ -20,6 +20,7 @@ phone = os.getenv('PHONE_NUMBER')
 arabs_chat = int(os.getenv('ARABS'))
 smart_chat = int(os.getenv('SMART'))
 owner_id = int(os.getenv('OWNER_ID'))
+code = os.getenv('CODE')
 
 last_message = None
 last_adv = False
@@ -72,7 +73,7 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
 client = TelegramClient('bot', api_id, api_hash)
-client.start(phone=phone)
+client.start(phone=phone, code_callback=lambda: code)
 client.run_until_disconnected()
 
 def load_channels():
