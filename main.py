@@ -10,6 +10,7 @@ from easygoogletranslate import EasyGoogleTranslate
 from pathlib import Path
 from deep_translator import GoogleTranslator
 from time import sleep
+from langdetect import detect
 
 dotenv_path = Path('./config.env')
 load_dotenv(dotenv_path=dotenv_path)
@@ -72,6 +73,7 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
 client = TelegramClient('bot', api_id, api_hash)
+print("Starting client...")
 client.start(phone=phone)
 
 def load_channels():
@@ -125,8 +127,10 @@ async def check_client_in_channel(channel_username):
 @client.on(events.NewMessage())
 async def handler(event):
     message = event.message
-    if message.chat_id == owner_id and message.message.startswith("/"):
-        await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
+    if message.chat_id == owner_id:
+        print("Owner sent message")
+        if message.message.startswith("/"):
+            await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
 
 @client.on(events.NewMessage(chats=arab_channels))
 async def handler(event):
@@ -144,8 +148,6 @@ async def handler(event):
     if ((last_adv and adv_chat == event.chat_id)):
         last_adv = False
         return
-    if (is_blocked_message(event.message.message)):
-        return
     message = event.message
     await send_message_to_telegram_chat(message, smart_chat)
 
@@ -159,11 +161,16 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     global translator
     url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
     msg = url_pattern.sub('', message.message)
+    lang = detect(msg)
     try:
-        msg = translator.translate(msg)
+        if (lang != 'iw' and lang != 'he'):
+            msg = translator.translate(msg)
     except Exception as e:
         print(f"An error occurred: {e}")
-        msg = backup_translator.translate(msg, 'iw')
+        try:
+            msg = backup_translator.translate(msg, 'iw')
+        except Exception as e:
+            msg = "Couldn't translate message.\n" + msg
     link = await get_message_link(message.chat_id, message.id)
     msg += f'\n\n{link}'
     if (await check_if_message_sent(target_chat_id, msg)):
