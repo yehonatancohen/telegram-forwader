@@ -3,7 +3,7 @@ from telethon import errors
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import GetHistoryRequest
 from telethon.tl.types import PeerChannel
-from telethon.errors import ChannelPrivateError, MediaCaptionTooLongError
+from telethon.errors import ChannelPrivateError, MediaCaptionTooLongError, SessionPasswordNeededError
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 from easygoogletranslate import EasyGoogleTranslate
@@ -73,8 +73,6 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
 client = TelegramClient('bot', api_id, api_hash)
-print("Starting client...")
-client.start(phone=phone)
 
 def load_channels():
     with open('arab_channels.txt', 'r') as f:
@@ -124,21 +122,18 @@ async def check_client_in_channel(channel_username):
         print(f"An error occurred: {e}")
         return False
 
-@client.on(events.NewMessage())
-async def handler(event):
+async def general_handler(event):
     message = event.message
     if message.chat_id == owner_id:
         print("Owner sent message")
         if message.message.startswith("/"):
             await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
 
-@client.on(events.NewMessage(chats=arab_channels))
-async def handler(event):
+async def arab_handler(event):
     message = event.message
     await send_message_to_telegram_chat(message, arabs_chat)
 
-@client.on(events.NewMessage(chats=smart_channels))
-async def handler(event):
+async def smart_handler(event):
     global last_adv
     global adv_chat
     if ("שיווקי" in event.message.message):
@@ -161,7 +156,12 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     global translator
     url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
     msg = url_pattern.sub('', message.message)
-    lang = detect(msg)
+    if (msg == '' or is_blocked_message(msg)):
+        return
+    try:
+        lang = detect(msg)
+    except Exception as e:
+        lang = 'iw'
     try:
         if (lang != 'iw' and lang != 'he'):
             msg = translator.translate(msg)
@@ -244,5 +244,63 @@ async def check_if_message_sent(channel_username, message_to_send):
     except Exception as e:
         print(f"An error occurred: {e}")
         return False
-    
-client.run_until_disconnected()
+
+def empty_code():
+    with open('code.txt', 'w') as f:
+        f.write('')
+
+def get_code():
+    with open('code.txt', 'r') as f:
+        return f.read()
+
+async def code_callback():
+    code = get_code()
+    while code == '':
+            print("Waiting for code...")
+            sleep(10)
+            code = get_code()
+    if code:
+        return code
+    else:
+        raise Exception('The CODE environment variable is not set.')
+
+async def main():
+    try:
+        empty_code()
+        await client.start(phone=lambda: phone, code_callback=code_callback)
+        if not await client.is_user_authorized():
+            await client.send_code_request(phone)
+            print("Check your phone for the authentication code.")
+
+            @client.on(events.NewMessage)
+            async def handler(event):
+                if event.text.isdigit():
+                    code = event.text.strip()
+                    try:
+                        await client.sign_in(phone, code)
+                        print("Successfully signed in!")
+                    except SessionPasswordNeededError:
+                        print("2FA enabled. Please provide your password.")
+                    except Exception as e:
+                        print(f"Failed to sign in: {e}")
+                else:
+                    print("Please send a valid authentication code.")
+        else:
+            print("Already authorized.")
+        print("Connected to Telegram successfully!")
+        load_channels()
+        print("Loaded channels")
+        await join_channels()
+        print("Joined channels")
+        await client.run_until_disconnected()
+        client.add_event_handler(general_handler, events.NewMessage)
+        client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
+        client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        
+async def run():
+    await main()
+    await client.run_until_disconnected()
+
+client.loop.run_until_complete(run())
