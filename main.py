@@ -73,6 +73,7 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
 client = TelegramClient('bot', api_id, api_hash)
+print("Starting client...")
 client.start(phone=phone)
 
 def load_channels():
@@ -126,8 +127,10 @@ async def check_client_in_channel(channel_username):
 @client.on(events.NewMessage())
 async def handler(event):
     message = event.message
-    if message.chat_id == owner_id and message.message.startswith("/"):
-        await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
+    if message.chat_id == owner_id:
+        print("Owner sent message")
+        if message.message.startswith("/"):
+            await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
 
 @client.on(events.NewMessage(chats=arab_channels))
 async def handler(event):
