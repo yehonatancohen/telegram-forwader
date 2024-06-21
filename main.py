@@ -266,6 +266,7 @@ async def code_callback():
 
 async def main():
     try:
+        print("Connecting to Telegram...")
         empty_code()
         await client.start(phone=lambda: phone, code_callback=code_callback)
         if not await client.is_user_authorized():
