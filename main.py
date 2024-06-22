@@ -11,6 +11,10 @@ from pathlib import Path
 from deep_translator import GoogleTranslator
 from time import sleep
 from langdetect import detect
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
 
 dotenv_path = Path('./config.env')
 load_dotenv(dotenv_path=dotenv_path)
@@ -86,7 +90,7 @@ async def join_channel(channel):
     try:
         if not await check_client_in_channel(channel):
             await client(JoinChannelRequest(channel))
-            print(f"Joined channel {channel}")
+            logger.info(f"Joined channel {channel}")
     except errors.FloodWaitError as e:
         sleep(e.seconds)
 
@@ -96,7 +100,7 @@ async def join_channels():
         try:
             if not await check_client_in_channel(channel):
                 await client(JoinChannelRequest(channel))
-                print(f"Joined channel {channel}")
+                logger.info(f"Joined channel {channel}")
         except errors.FloodWaitError as e:
             sleep(e.seconds)
 
@@ -110,22 +114,22 @@ async def check_client_in_channel(channel_username):
 
         # Check if participant information is present
         if full_channel.full_chat.participants_count > 0:
-            print(f"The client is in the channel {channel_username}")
+            logger.info(f"The client is in the channel {channel_username}")
             return True
         else:
-            print(f"The client is not in the channel {channel_username}")
+            logger.info(f"The client is not in the channel {channel_username}")
             return False
     except ChannelPrivateError:
-        print(f"The channel {channel_username} is private or not accessible.")
+        logger.info(f"The channel {channel_username} is private or not accessible.")
         return False
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.info(f"An error occurred: {e}")
         return False
 
 async def general_handler(event):
     message = event.message
     if message.chat_id == owner_id:
-        print("Owner sent message")
+        logger.info("Owner sent message")
         if message.message.startswith("/"):
             await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
 
@@ -166,7 +170,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
         if (lang != 'iw' and lang != 'he'):
             msg = translator.translate(msg)
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.info(f"An error occurred: {e}")
         try:
             msg = backup_translator.translate(msg, 'iw')
         except Exception as e:
@@ -174,7 +178,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     link = await get_message_link(message.chat_id, message.id)
     msg += f'\n\n{link}'
     if (await check_if_message_sent(target_chat_id, msg)):
-        print("Message already sent")
+        logger.info("Message already sent")
         return
     if (message.file != None):
         try:
@@ -242,7 +246,7 @@ async def check_if_message_sent(channel_username, message_to_send):
                     return True
         return False
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.info(f"An error occurred: {e}")
         return False
 
 def empty_code():
@@ -256,7 +260,7 @@ def get_code():
 async def code_callback():
     code = get_code()
     while code == '':
-            print("Waiting for code...")
+            logger.info("Waiting for code...")
             sleep(10)
             code = get_code()
     if code:
@@ -266,12 +270,12 @@ async def code_callback():
 
 async def main():
     try:
-        print("Connecting to Telegram...")
+        logger.info("Connecting to Telegram...")
         empty_code()
         await client.start(phone=lambda: phone, code_callback=code_callback)
         if not await client.is_user_authorized():
             await client.send_code_request(phone)
-            print("Check your phone for the authentication code.")
+            logger.info("Check your phone for the authentication code.")
 
             @client.on(events.NewMessage)
             async def handler(event):
@@ -279,26 +283,26 @@ async def main():
                     code = event.text.strip()
                     try:
                         await client.sign_in(phone, code)
-                        print("Successfully signed in!")
+                        logger.info("Successfully signed in!")
                     except SessionPasswordNeededError:
-                        print("2FA enabled. Please provide your password.")
+                        logger.info("2FA enabled. Please provide your password.")
                     except Exception as e:
-                        print(f"Failed to sign in: {e}")
+                        logger.info(f"Failed to sign in: {e}")
                 else:
-                    print("Please send a valid authentication code.")
+                    logger.info("Please send a valid authentication code.")
         else:
-            print("Already authorized.")
-        print("Connected to Telegram successfully!")
+            logger.info("Already authorized.")
+        logger.info("Connected to Telegram successfully!")
         load_channels()
-        print("Loaded channels")
+        logger.info("Loaded channels")
         await join_channels()
-        print("Joined channels")
+        logger.info("Joined channels")
         client.add_event_handler(general_handler, events.NewMessage)
         client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
         await client.run_until_disconnected()
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logger.info(f"An error occurred: {e}")
         
 async def run():
     await main()
