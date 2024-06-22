@@ -293,10 +293,10 @@ async def main():
         print("Loaded channels")
         await join_channels()
         print("Joined channels")
-        await client.run_until_disconnected()
         client.add_event_handler(general_handler, events.NewMessage)
         client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
+        await client.run_until_disconnected()
     except Exception as e:
         print(f"An error occurred: {e}")
         
