@@ -8,3 +8,5 @@ clean_data.py
 test.py
 !requirements.txt
 !code.txt
+!arab_channels.txt
+!smart_channels.txt
