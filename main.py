@@ -128,6 +128,7 @@ async def check_client_in_channel(channel_username):
 
 async def general_handler(event):
     message = event.message
+    logger.info(f"Received message from {message.chat_id}")
     if message.chat_id == owner_id:
         logger.info("Owner sent message")
         if message.message.startswith("/"):
@@ -161,6 +162,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
     msg = url_pattern.sub('', message.message)
     if (msg == '' or is_blocked_message(msg)):
+        logger.info(f'Blocked message: {msg}')
         return
     try:
         lang = detect(msg)
@@ -183,12 +185,15 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     if (message.file != None):
         try:
             await client.send_file(entity=target_chat_id, file=message.media, caption=msg)
+            logger.info(f'Sent message with media to {target_chat_id}')
         except Exception as e:
             if isinstance(e, MediaCaptionTooLongError):
                 await client.send_file(entity=target_chat_id, file=message.file.media)
                 await client.send_message(entity=target_chat_id, message=msg, link_preview=False)
+                logger.info(f'Sent message with media to {target_chat_id}')
     else:
         await client.send_message(entity=target_chat_id, message=msg, link_preview=False)
+        logger.info(f'Sent message to {target_chat_id}')
 
 async def add_channel(channel_id, list, list_name):
     match = re.match(r'(https://t\.me/)?(?P<username>[a-zA-Z0-9_]+)', channel_id)
