@@ -6,4 +6,8 @@ WORKDIR /usr/src/app
 
 RUN pip install --no-cache-dir -r requirements.txt
 
+ARG SECRET_PASSWORD
+ENV SECRET_PASSWORD=$SECRET_PASSWORD
+RUN openssl enc -aes-256-cbc -d -in session.enc -out bot.session -pass pass:$SECRET_PASSWORD
+
 CMD ["python", "main.py"]
