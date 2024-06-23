@@ -1,4 +1,4 @@
-import os, re
+import os, re, sys
 from telethon import errors
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import GetHistoryRequest
@@ -13,7 +13,7 @@ from time import sleep
 from langdetect import detect
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 dotenv_path = Path('./config.env')
@@ -144,8 +144,10 @@ async def smart_handler(event):
     if ("שיווקי" in event.message.message):
         last_adv = True
         adv_chat = event.chat_id
+        logger.info("Promotional message")
         return
     if ((last_adv and adv_chat == event.chat_id)):
+        logger.info("Promotional message")
         last_adv = False
         return
     message = event.message
