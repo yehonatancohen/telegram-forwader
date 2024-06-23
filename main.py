@@ -161,7 +161,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     global translator
     url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
     msg = url_pattern.sub('', message.message)
-    if (msg == '' or is_blocked_message(msg)):
+    if ((msg == '' and not message.file) or is_blocked_message(msg)):
         logger.info(f'Blocked message: {msg}')
         return
     try:
