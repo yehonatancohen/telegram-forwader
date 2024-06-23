@@ -120,10 +120,10 @@ async def check_client_in_channel(channel_username):
             logger.info(f"The client is not in the channel {channel_username}")
             return False
     except ChannelPrivateError:
-        logger.info(f"The channel {channel_username} is private or not accessible.")
+        logger.error(f"The channel {channel_username} is private or not accessible.")
         return False
     except Exception as e:
-        logger.info(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
         return False
 
 async def general_handler(event):
@@ -154,6 +154,7 @@ async def smart_handler(event):
 def is_blocked_message(message):
     for blocked in blocked_message:
         if blocked in message:
+            logger.error(f'Blocked message, cause: {blocked} - full message: {message}')
             return True
     return False
 
@@ -162,7 +163,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
     msg = url_pattern.sub('', message.message)
     if ((msg == '' and not message.file) or is_blocked_message(msg)):
-        logger.info(f'Blocked message: {msg}')
+        logger.error(f'Blocked message: {msg}')
         return
     try:
         lang = detect(msg)
@@ -172,7 +173,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
         if (lang != 'iw' and lang != 'he'):
             msg = translator.translate(msg)
     except Exception as e:
-        logger.info(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
         try:
             msg = backup_translator.translate(msg, 'iw')
         except Exception as e:
@@ -180,7 +181,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     link = await get_message_link(message.chat_id, message.id)
     msg += f'\n\n{link}'
     if (await check_if_message_sent(target_chat_id, msg)):
-        logger.info("Message already sent")
+        logger.error("Message already sent")
         return
     if (message.file != None):
         try:
@@ -251,7 +252,7 @@ async def check_if_message_sent(channel_username, message_to_send):
                     return True
         return False
     except Exception as e:
-        logger.info(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
         return False
 
 def empty_code():
@@ -290,11 +291,11 @@ async def main():
                         await client.sign_in(phone, code)
                         logger.info("Successfully signed in!")
                     except SessionPasswordNeededError:
-                        logger.info("2FA enabled. Please provide your password.")
+                        logger.error("2FA enabled. Please provide your password.")
                     except Exception as e:
-                        logger.info(f"Failed to sign in: {e}")
+                        logger.error(f"Failed to sign in: {e}")
                 else:
-                    logger.info("Please send a valid authentication code.")
+                    logger.error("Please send a valid authentication code.")
         else:
             logger.info("Already authorized.")
         logger.info("Connected to Telegram successfully!")
@@ -307,7 +308,7 @@ async def main():
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
         await client.run_until_disconnected()
     except Exception as e:
-        logger.info(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e}")
         
 async def run():
     await main()
