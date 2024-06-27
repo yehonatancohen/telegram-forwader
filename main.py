@@ -130,6 +130,8 @@ async def general_handler(event):
     message = event.message
     logger.info(f"Received message from {message.chat_id}")
     if message.chat_id == owner_id:
+        if (message.file != None):
+            print('file')
         logger.info("Owner sent message")
         if message.message.startswith("/"):
             await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
@@ -141,7 +143,7 @@ async def arab_handler(event):
 async def smart_handler(event):
     global last_adv
     global adv_chat
-    if ("שיווקי" in event.message.message):
+    if ("°תוכן שיווקי" in event.message.message):
         last_adv = True
         adv_chat = event.chat_id
         logger.info("Promotional message")
@@ -155,7 +157,7 @@ async def smart_handler(event):
 
 def is_blocked_message(message):
     for blocked in blocked_message:
-        if blocked in message:
+        if blocked in message.split():
             logger.error(f'Blocked message, cause: {blocked} - full message: {message}')
             return True
     return False
