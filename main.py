@@ -2,7 +2,7 @@ import os, re, sys
 from telethon import errors
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import GetHistoryRequest
-from telethon.tl.types import PeerChannel, MessageMediaPhoto, MessageMediaDocument
+from telethon.tl.types import PeerChannel, MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
 from telethon.errors import ChannelPrivateError, MediaCaptionTooLongError, SessionPasswordNeededError
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
@@ -15,8 +15,12 @@ import logging
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
+dev = False
 
-dotenv_path = Path('./config.env')
+if dev:
+    dotenv_path = Path('./dev-config.env')
+else:
+    dotenv_path = Path('./config.env')
 load_dotenv(dotenv_path=dotenv_path)
 
 api_id = int(os.getenv('TELEGRAM_API_ID'))
@@ -128,6 +132,8 @@ async def general_handler(event):
     message = event.message
     logger.info(f"Received message from {message.chat_id}")
     if message.chat_id == owner_id:
+        if dev:
+            await send_message_to_telegram_chat(message, arabs_chat)
         if message.message.startswith("/"):
             await command_handler(message.message.split(' ')[0].split('/')[1], message.chat_id, message.message.split(' ')[1:])
 
@@ -162,7 +168,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     if (await check_if_message_sent(target_chat_id, caption, message)):
         logger.error("Message already sent")
         return
-    if (message.media != None):
+    if (message.media != None and (type(message.media) == MessageMediaPhoto or type(message.media) == MessageMediaDocument)):
         if type(message.media) == MessageMediaPhoto:
             if message.media.photo.dc_id > 1:
                 await grouped_handler(message, target_chat_id, caption)
@@ -170,10 +176,6 @@ async def send_message_to_telegram_chat(message, target_chat_id):
         elif type(message.media) == MessageMediaDocument:
             await client.send_file(entity=target_chat_id, file=message.media.document, caption=caption)
             logger.info(f'Sent message with document to {target_chat_id}')
-            return
-        else:
-            await client.send_file(entity=target_chat_id, file=message.media.file, caption=caption)
-            logger.info(f'Sent message with media to {target_chat_id}')
             return
     else:
         await client.send_message(entity=target_chat_id, message=caption, link_preview=False)
@@ -223,7 +225,7 @@ async def fetch_media_groups_as_objects(message):
 
 async def process_message(message):
     global translator
-    url_pattern = re.compile(r'http[s]?://\S+|www\.\S+')
+    url_pattern = re.compile(r'(https?://)?(t\.me|telegram\.me)/(joinchat/[\w-]+|[\w\d_]+/?|[\w\d_]+/\d+)')
     caption = url_pattern.sub('', message.message)
     if ((caption == '' and not message.file) or is_blocked_message(caption)):
         logger.error(f'Blocked message: {caption}')
@@ -236,7 +238,6 @@ async def process_message(message):
         if (lang != 'iw' and lang != 'he'):
             caption = translator.translate(caption)
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
         try:
             caption = backup_translator.translate(caption, 'iw')
         except Exception as e:
@@ -331,10 +332,10 @@ async def main():
         else:
             logger.info("Already authorized.")
         logger.info("Connected to Telegram successfully!")
-        load_channels()
-        logger.info("Loaded channels")
-        await join_channels()
-        logger.info("Joined channels")
+        #load_channels()
+        #logger.info("Loaded channels")
+        #await join_channels()
+        #logger.info("Joined channels")
         client.add_event_handler(general_handler, events.NewMessage)
         client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))

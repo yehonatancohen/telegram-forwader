@@ -2,7 +2,10 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.backends import default_backend
+from dotenv import load_dotenv
 import os
+from pathlib import Path
+dotenv_path = Path('./config.env')
 
 def decrypt_file(file_path, password):
     with open(file_path, 'rb') as f:
@@ -31,6 +34,7 @@ def decrypt_file(file_path, password):
     with open(file_path.replace('.enc', ''), 'wb') as f:
         f.write(data)
 
+load_dotenv(dotenv_path=dotenv_path)
 # Use the secret password from environment variable
 secret_password = os.getenv('SECRET_PASSWORD').encode()
 
