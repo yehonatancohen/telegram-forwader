@@ -344,7 +344,7 @@ async def main():
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
         await client.run_until_disconnected()
     except Exception as e:
-        logger.error(f"An error occurred: {e} message link: {await get_message_link(message.chat_id, message.id)}")
+        logger.error(f"An error occurred: {e}")
         
 async def run():
     await main()
