@@ -15,6 +15,7 @@ import logging
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
+
 dev = False
 
 if dev:
@@ -130,7 +131,7 @@ async def check_client_in_channel(channel_username):
 
 async def general_handler(event):
     message = event.message
-    logger.info(f"Received message from {message.chat_id}")
+    logger.info(f"Received message from {message.chat.title}")
     if message.chat_id == owner_id:
         if dev:
             await send_message_to_telegram_chat(message, arabs_chat)
@@ -159,7 +160,7 @@ async def smart_handler(event):
 def is_blocked_message(message):
     for blocked in blocked_message:
         if blocked in message.split():
-            logger.error(f'Blocked message, cause: {blocked} - full message: {message}')
+            logger.info(f'Blocked message, cause: {blocked} - full message: {message}')
             return True
     return False
 
@@ -168,6 +169,7 @@ async def send_message_to_telegram_chat(message, target_chat_id):
     if (await check_if_message_sent(target_chat_id, caption, message)):
         logger.error("Message already sent")
         return
+    chat_title = await client.get_entity(target_chat_id)
     if (message.media != None and (type(message.media) == MessageMediaPhoto or type(message.media) == MessageMediaDocument)):
         if type(message.media) == MessageMediaPhoto:
             if message.media.photo.dc_id > 1:
@@ -175,11 +177,11 @@ async def send_message_to_telegram_chat(message, target_chat_id):
                 return
         elif type(message.media) == MessageMediaDocument:
             await client.send_file(entity=target_chat_id, file=message.media.document, caption=caption)
-            logger.info(f'Sent message with document to {target_chat_id}')
+            logger.info(f'Sent message with document to {chat_title}')
             return
     else:
         await client.send_message(entity=target_chat_id, message=caption, link_preview=False)
-        logger.info(f'Sent message to {target_chat_id}')
+        logger.info(f'Sent message to {chat_title}')
 
 
 async def grouped_handler(message, target_chat_id, caption):
@@ -187,21 +189,22 @@ async def grouped_handler(message, target_chat_id, caption):
     if (grouped_message == 'working'):
         return
     try:
+        chat_title = await client.get_entity(target_chat_id)
         album = grouped_message[message.grouped_id]
         if (album[0] == "sent"):
             return
         await client.send_file(entity=target_chat_id, file=album[1:], caption=grouped_message[message.grouped_id][0], link_preview=False)
         grouped_message[message.grouped_id].append("sent")
         grouped_message.pop(message.grouped_id)
-        logger.info(f'Sent message with photos to {target_chat_id}')
+        logger.info(f'Sent message with photos to {chat_title}')
     except Exception as e:
         if isinstance(e, MediaCaptionTooLongError):
             sent_file = await client.send_file(entity=target_chat_id, file=grouped_message[message.grouped_id])
             await client.send_message(entity=target_chat_id, message=caption, link_preview=False, reply_to=sent_file)
             grouped_message.pop(message.grouped_id)
-            logger.info(f'Sent message with photos to {target_chat_id}')
+            logger.info(f'Sent message with photos to {chat_title}')
         else:
-            logger.error(f"An error occurred: {e}")
+            logger.error(f"An error occurred: {e} message link: {await get_message_link(message.chat_id, message.id)}")
 
 async def fetch_media_groups_as_objects(message):
     global media_groups
@@ -228,7 +231,7 @@ async def process_message(message):
     url_pattern = re.compile(r'(https?://)?(t\.me|telegram\.me)/(joinchat/[\w-]+|[\w\d_]+/?|[\w\d_]+/\d+)')
     caption = url_pattern.sub('', message.message)
     if ((caption == '' and not message.file) or is_blocked_message(caption)):
-        logger.error(f'Blocked message: {caption}')
+        logger.info(f'Blocked message: {caption}')
         return
     try:
         lang = detect(caption)
@@ -305,7 +308,7 @@ async def check_if_message_sent(channel_username, caption, message_obj):
                     return True
         return False
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e} message link: {await get_message_link(message.chat_id, message.id)}")
         return False
 
 async def main():
@@ -341,7 +344,7 @@ async def main():
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
         await client.run_until_disconnected()
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(f"An error occurred: {e} message link: {await get_message_link(message.chat_id, message.id)}")
         
 async def run():
     await main()
