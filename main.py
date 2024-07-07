@@ -2,7 +2,7 @@ import os, re, sys
 from telethon import errors
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import GetHistoryRequest
-from telethon.tl.types import PeerChannel, MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
+from telethon.tl.types import PeerChannel, MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage, User
 from telethon.errors import ChannelPrivateError, MediaCaptionTooLongError, SessionPasswordNeededError
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
@@ -82,7 +82,10 @@ smart_channels = [
 if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
-client = TelegramClient('bot', api_id, api_hash)
+if dev:
+    client = TelegramClient('bot-dev', api_id, api_hash)
+else:
+    client = TelegramClient('bot', api_id, api_hash)
 
 def load_channels():
     with open('arab_channels.txt', 'r') as f:
@@ -131,7 +134,10 @@ async def check_client_in_channel(channel_username):
 
 async def general_handler(event):
     message = event.message
-    logger.info(f"Received message from {message.chat.title}")
+    if (message.is_private):
+        logger.info(f"Received message from {message.chat.first_name}")
+    else:
+        logger.info(f"Received message from {message.chat.title}")
     if message.chat_id == owner_id:
         if dev:
             await send_message_to_telegram_chat(message, arabs_chat)
@@ -170,9 +176,10 @@ async def send_message_to_telegram_chat(message, target_chat_id):
         logger.error("Message already sent")
         return
     chat_title = await client.get_entity(target_chat_id)
+    chat_title = chat_title.title if chat_title else target_chat_id
     if (message.media != None and (type(message.media) == MessageMediaPhoto or type(message.media) == MessageMediaDocument)):
-        if type(message.media) == MessageMediaPhoto:
-            if message.media.photo.dc_id > 1:
+        if type(message.media) == MessageMediaPhoto or (type(message.media) == MessageMediaDocument and message.media.video):
+            if (hasattr(message.media, "photo") and message.media.photo.dc_id > 1) or (hasattr(message.media, "document") and message.media.document.dc_id > 1):
                 await grouped_handler(message, target_chat_id, caption)
                 return
         elif type(message.media) == MessageMediaDocument:
@@ -190,6 +197,7 @@ async def grouped_handler(message, target_chat_id, caption):
         return
     try:
         chat_title = await client.get_entity(target_chat_id)
+        chat_title = chat_title.title if chat_title else target_chat_id
         album = grouped_message[message.grouped_id]
         if (album[0] == "sent"):
             return
@@ -213,7 +221,7 @@ async def fetch_media_groups_as_objects(message):
     chat = message.chat_id
     if message.grouped_id in media_groups:
         return 'working'
-    media_groups[message.grouped_id] = []
+    media_groups[message.grouped_id] = ['']
     messages = await client.get_messages(chat, limit=limit, offset_id=offset_id)
     messages = [msg for msg in messages if msg.grouped_id == message.grouped_id]
     if not messages:
@@ -221,9 +229,9 @@ async def fetch_media_groups_as_objects(message):
     for message in messages:
         if message.grouped_id:
             media_groups[message.grouped_id].append(message.media)
-            if message.message != '' and type(media_groups[message.grouped_id][0]) != type(''):
+            if message.message != '' and media_groups[message.grouped_id][0] == '':
                 caption = await process_message(message)
-                media_groups[message.grouped_id].insert(0, caption)   
+                media_groups[message.grouped_id][0] = caption
     return media_groups
 
 async def process_message(message):
@@ -335,9 +343,9 @@ async def main():
         else:
             logger.info("Already authorized.")
         logger.info("Connected to Telegram successfully!")
-        load_channels()
-        logger.info("Loaded channels")
-        await join_channels()
+        #load_channels()
+        #logger.info("Loaded channels")
+        #await join_channels()
         logger.info("Joined channels")
         client.add_event_handler(general_handler, events.NewMessage)
         client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
