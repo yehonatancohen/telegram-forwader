@@ -343,10 +343,11 @@ async def main():
         else:
             logger.info("Already authorized.")
         logger.info("Connected to Telegram successfully!")
-        #load_channels()
-        #logger.info("Loaded channels")
-        #await join_channels()
-        logger.info("Joined channels")
+        if not dev:
+            load_channels()
+            logger.info("Loaded channels")
+            await join_channels()
+            logger.info("Joined channels")
         client.add_event_handler(general_handler, events.NewMessage)
         client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
         client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
