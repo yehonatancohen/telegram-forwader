@@ -22,6 +22,7 @@ if dev:
     dotenv_path = Path('./dev-config.env')
 else:
     dotenv_path = Path('./config.env')
+
 load_dotenv(dotenv_path=dotenv_path)
 
 api_id = int(os.getenv('TELEGRAM_API_ID'))
@@ -42,7 +43,9 @@ blocked_message = [
     'צבע אדום',
     'גרם',
     'היכנסו למרחב המוגן',
-    'חדירת כלי טיס עוין'
+    'חדירת כלי טיס עוין',
+    'פרסום',
+    'פרסומת',
 ]
 
 arab_channels = [
@@ -83,9 +86,9 @@ if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
     raise ValueError("One or more environment variables are missing.")
 
 if dev:
-    client = TelegramClient('bot-dev', api_id, api_hash)
+    client = TelegramClient('/security/bot-dev', api_id, api_hash)
 else:
-    client = TelegramClient('bot', api_id, api_hash)
+    client = TelegramClient('/security/bot', api_id, api_hash)
 
 def load_channels():
     with open('arab_channels.txt', 'r') as f:
