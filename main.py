@@ -51,9 +51,6 @@ arab_channels = [
     '@Electrohizbullah',
     '@SerajSat',
     '@shadysopoh',
-    '@jeninqassam',
-    '@Janin324',
-    '@jenin4',
     '@anas_hoshia',
     '@abohamzahasanat',
     '@sarayajneen',
@@ -67,7 +64,6 @@ arab_channels = [
     '@qassam1brigades',
     '@qassambrigades',
     '@duyuf1',
-    '@Ail_2_9',
     '@alghalebun3',
     '@areennabluss'
 ]
@@ -76,7 +72,12 @@ smart_channels = [
     '@abualiexpress',
     '@arabworld301',
     '@AlealamAlearabiuEranMalca',
-    '@AsrarLubnan'
+    '@HallelBittonRosen',
+    '@amitsegal',
+    '@moriahdoron',
+    '@amirbohbot',
+    '@barakbetg',
+    '@Middle_East_Insight'
 ]
 
 if not all([api_id, api_hash, phone, arabs_chat, smart_chat]):
