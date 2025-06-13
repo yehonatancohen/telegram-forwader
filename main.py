@@ -2,16 +2,14 @@ import os
 import re
 import sys
 import logging
+import asyncio
 from pathlib import Path
 from time import sleep
 
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, errors
-from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
-from telethon.tl.functions.messages import GetHistoryRequest
-from telethon.tl.types import InputPeerChannel, PeerChannel, MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage, User
-from telethon.errors import ChannelPrivateError, MediaCaptionTooLongError, SessionPasswordNeededError
-
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from deep_translator import GoogleTranslator
 from easygoogletranslate import EasyGoogleTranslate
 from langdetect import detect
@@ -28,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Load environment
 DEV = os.getenv('DEV_MODE', 'false').lower() == 'true'
-config_file = 'dev-config.env' if DEV else 'config.env'
+config_file = 'config_dev.env' if DEV else 'config.env'
 load_dotenv(dotenv_path=Path(config_file))
 
 # Credentials
@@ -40,16 +38,17 @@ ARABS_CHAT = os.getenv('ARABS')
 SMART_CHAT = os.getenv('SMART')
 
 # Verify credentials
-missing = [k for k,v in {
+required = {
     'TELEGRAM_API_ID': API_ID,
     'TELEGRAM_API_HASH': API_HASH,
     'PHONE_NUMBER': PHONE,
     'OWNER_ID': OWNER_ID,
     'ARABS': ARABS_CHAT,
     'SMART': SMART_CHAT
-}.items() if not v]
+}
+missing = [k for k, v in required.items() if not v]
 if missing:
-    logger.error(f"Missing required environment variables: {', '.join(missing)}. Please check your config file.")
+    logger.error(f"Missing environment vars: {', '.join(missing)}")
     sys.exit(1)
 
 API_ID = int(API_ID)
@@ -58,8 +57,8 @@ ARABS_CHAT = int(ARABS_CHAT)
 SMART_CHAT = int(SMART_CHAT)
 
 # Initialize client
-session_name = 'bot-dev' if DEV else 'bot'
-client = TelegramClient(session_name, API_ID, API_HASH)
+session = 'bot-dev' if DEV else 'bot'
+client = TelegramClient(session, API_ID, API_HASH)
 
 # Translators
 translator = GoogleTranslator(source='auto', target='iw')
@@ -70,16 +69,16 @@ BLOCKED_KEYWORDS = {
     'צבע אדום', 'גרם', 'היכנסו למרחב המוגן', 'חדירת כלי טיס עוין'
 }
 
-# Channels lists
+# Static channel lists (without '@')
 arab_channels = [
-    '@a7rarjenin', '@QudsN', '@Electrohizbullah', '@SerajSat', '@shadysopoh',
-    '@anas_hoshia', '@abohamzahasanat', '@sarayajneen', '@C_Military1', '@mmirleb',
-    '@SabrenNews22', '@IraninArabic', '@iraninarabic_ir', '@meshheek',
-    '@qassam1brigades', '@qassambrigades', '@alghalebun3', '@areennabluss'
+    'a7rarjenin', 'QudsN', 'Electrohizbullah', 'SerajSat', 'shadysopoh',
+    'anas_hoshia', 'abohamzahasanat', 'sarayajneen', 'C_Military1', 'mmirleb',
+    'SabrenNews22', 'IraninArabic', 'iraninarabic_ir', 'meshheek',
+    'qassam1brigades', 'qassambrigades', 'alghalebun3', 'areennabluss'
 ]
 smart_channels = [
-    '@abualiexpress', '@AlealamAlearabiuEranMalca', '@HallelBittonRosen',
-    '@amitsegal', '@moriahdoron', '@amirbohbot', '@Middle_East_Insight'
+    'abualiexpress', 'arabworld301news', 'AlealamAlearabiuEranMalca', 'HallelBittonRosen',
+    'amitsegal', 'moriahdoron', 'amirbohbot', 'Middle_East_Insight'
 ]
 
 # Load additional channels from files
@@ -88,223 +87,125 @@ def load_channels_from_file():
     for fname, lst in [('arab', arab_channels), ('smart', smart_channels)]:
         path = Path(f'{fname}_channels.txt')
         if path.is_file():
-            with path.open('r') as f:
+            with path.open() as f:
                 for line in f:
-                    ch = line.strip()
-                    if ch and ch not in lst:
-                        lst.append(ch)
-                        logger.info(f"Loaded channel @{ch} from {fname}_channels.txt")
+                    name = line.strip().lstrip('@')
+                    if name and name not in lst:
+                        lst.append(name)
+                        logger.info(f"Loaded channel {name} from {fname}_channels.txt")
 
-# Join a single channel if not already in
-async def join_channel(channel):
-    try:
-        peer = await client.get_input_entity(channel)
-        if not isinstance(peer, InputPeerChannel):
-            logger.warning(f"Skipping join: {channel} is not a channel or supergroup.")
-            return
-        if not await check_client_in_channel(peer):
-            await client(JoinChannelRequest(channel=peer))
-            logger.info(f"Successfully joined channel: {channel}")
-        else:
-            logger.info(f"Already a member of channel: {channel}")
-    except errors.FloodWaitError as e:
-        logger.warning(f"Flood wait for {e.seconds}s when joining channel: {channel}. Sleeping...")
-        sleep(e.seconds)
-    except Exception as e:
-        logger.error(f"Failed to join channel {channel}: {e}")
-
-# Join all configured channels
-async def join_all_channels():
+# Join channels and build ID maps
+async def init_channels():
     load_channels_from_file()
-    logger.info("Attempting to join all configured channels...")
-    for ch in set(arab_channels + smart_channels):
-        logger.info(f"Joining channel: {ch}")
-        await join_channel(ch.lstrip('@'))
+    dialogs = await client.get_dialogs()
+    joined = {d.entity.username.lower() for d in dialogs if getattr(d.entity, 'username', None)}
+    channel_ids = {}
+    for name in set(arab_channels + smart_channels):
+        uname = name.lower()
+        try:
+            if uname not in joined:
+                await client(JoinChannelRequest(uname))
+                logger.info(f"Joined @{uname}")
+            entity = await client.get_entity(uname)
+            channel_ids[uname] = entity.id
+        except errors.FloodWaitError as e:
+            logger.warning(f"Rate limited joining @{uname}, waiting {e.seconds}s")
+            sleep(e.seconds)
+        except Exception as e:
+            logger.error(f"Error with channel @{uname}: {e}")
+    return channel_ids
 
-# Check if bot is in channel
-async def check_client_in_channel(channel_peer):
+# Utility: construct message link
+async def get_message_link(chat_id, msg_id):
     try:
-        if not isinstance(channel_peer, InputPeerChannel):
-            logger.debug(f"Entity {channel_peer} is not an InputPeerChannel.")
-            return False
-        full = await client(GetFullChannelRequest(channel=channel_peer))
-        in_channel = getattr(full.full_chat, 'participants_count', 0) > 0
-        logger.debug(f"Checked membership for {channel_peer.channel_id}: {'IN' if in_channel else 'NOT IN'}")
-        return in_channel
-    except ChannelPrivateError:
-        logger.info(f"Cannot check membership: Channel {channel_peer.channel_id} is private.")
-        return False
+        ent = await client.get_entity(chat_id)
+        username = getattr(ent, 'username', None)
+        if username:
+            return f"https://t.me/{username}/{msg_id}"
     except Exception as e:
-        logger.error(f"Error checking channel membership for {channel_peer}: {e}")
-        return False
+        logger.warning(f"Failed to construct message link for {chat_id}/{msg_id}: {e}")
+    return ''
 
-# De-duplicate sending
-async def check_if_message_sent(channel, caption, message_obj):
-    try:
-        peer = await client.get_input_entity(channel)
-        history = await client.get_messages(peer, limit=50)
-        for msg in history:
-            if msg.media and message_obj.media:
-                if type(msg.media) == type(message_obj.media) and msg.media == message_obj.media:
-                    logger.info(f"Duplicate media detected in channel {channel}, skipping send.")
-                    return True
-            if msg.message and caption == msg.message:
-                logger.info(f"Duplicate text detected in channel {channel}, skipping send.")
-                return True
-        return False
-    except Exception as e:
-        logger.error(f"Error checking message history for channel {channel}: {e}")
-        return False
+# Message processing and forwarding helpers
+def is_blocked(text):
+    return any(kw in text for kw in BLOCKED_KEYWORDS)
 
-# Handlers
-async def general_handler(event):
-    message = event.message
-    chat_id = message.chat_id
-    logger.info(f"Received message in chat {chat_id} from user {message.sender_id}: {message.text[:50] if message.text else '[no text]'}")
-    if chat_id == OWNER_ID and message.text and message.text.startswith('/'):
-        parts = message.text.split()
-        cmd = parts[0][1:]
-        args = parts[1:]
-        logger.info(f"Owner command received: /{cmd} {' '.join(args)}")
-        await command_handler(cmd, chat_id, args)
-
-async def arab_handler(event):
-    logger.info(f"Forwarding message from Arab channel {event.chat_id} (msg id {event.message.id})")
-    await send_message_to_telegram_chat(event.message, ARABS_CHAT)
-
-async def smart_handler(event):
-    msg = event.message
-    if '°תוכן שיווקי' in msg.text:
-        logger.info(f"Blocked marketing content in smart channel {event.chat_id} (msg id {msg.id})")
-        return
-    logger.info(f"Forwarding message from Smart channel {event.chat_id} (msg id {msg.id})")
-    await send_message_to_telegram_chat(msg, SMART_CHAT)
-
-# Message processing
-
-def is_blocked_message(text):
-    blocked = any(kw in text for kw in BLOCKED_KEYWORDS)
-    if blocked:
-        logger.info(f"Blocked message due to keyword: {text[:50]}")
-    return blocked
-
-async def process_message(message):
-    url_pattern = re.compile(r'(https?://)?(t\.me|telegram\.me)/(joinchat/|\w+)')
-    caption = url_pattern.sub('', message.text or '')
-    if not caption and not message.file or is_blocked_message(caption):
-        logger.info(f"Message blocked or empty. Message id: {message.id}")
+async def process_message(msg):
+    text = msg.text or ''
+    text = re.sub(r'(https?://)?(t\.me|telegram\.me)/(joinchat/|\w+)', '', text)
+    if (not text and not msg.file) or is_blocked(text):
         return None
     try:
-        lang = detect(caption)
-        logger.debug(f"Detected language for message id {message.id}: {lang}")
-    except Exception as e:
-        logger.warning(f"Language detection failed for message id {message.id}: {e}")
+        lang = detect(text)
+    except:
         lang = 'iw'
     if lang not in ('he', 'iw'):
         try:
-            caption = translator.translate(caption)
-            logger.info(f"Translated message id {message.id} to Hebrew using GoogleTranslator.")
-        except Exception as e:
-            logger.warning(f"GoogleTranslator failed for message id {message.id}: {e}")
+            text = translator.translate(text)
+        except:
             try:
-                caption = backup_translator.translate(caption, 'iw')
-                logger.info(f"Translated message id {message.id} to Hebrew using EasyGoogleTranslate.")
-            except Exception as e2:
-                logger.error(f"Backup translation failed for message id {message.id}: {e2}")
-                caption = "[Translation failed]\n" + caption
-    link = await get_message_link(message.chat_id, message.id)
-    return f"{caption}\n\n{link}"
+                text = backup_translator.translate(text, 'iw')
+            except:
+                text = '[Translation failed]\n' + text
+    link = await get_message_link(msg.chat_id, msg.id)
+    return f"{text}\n\n{link}"
 
-# Sending logic with media grouping
-async def send_message_to_telegram_chat(message, target_chat_id):
-    caption = await process_message(message)
-    if not caption:
-        logger.info(f"Message id {message.id} not sent (blocked or empty).")
+async def check_duplicate(dest, caption, msg):
+    try:
+        history = await client.get_messages(dest, limit=50)
+        for m in history:
+            if m.media and msg.media and type(m.media) == type(msg.media) and m.media == msg.media:
+                return True
+            if m.message == caption:
+                return True
+    except:
+        pass
+    return False
+
+async def forward_message(msg, target):
+    processed = await process_message(msg)
+    if not processed:
         return
-    if await check_if_message_sent(target_chat_id, caption, message):
-        logger.info(f"Message id {message.id} already sent to chat {target_chat_id}. Skipping.")
+    if await check_duplicate(target, processed, msg):
         return
     try:
-        if message.media and isinstance(message.media, (MessageMediaPhoto, MessageMediaDocument)):
-            await client.send_file(target_chat_id, message.media, caption=caption, link_preview=False)
-            logger.info(f"Sent media message id {message.id} to chat {target_chat_id}.")
+        if msg.media and isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
+            await client.send_file(target, msg.media, caption=processed, link_preview=False)
         else:
-            await client.send_message(target_chat_id, caption, link_preview=False)
-            logger.info(f"Sent text message id {message.id} to chat {target_chat_id}.")
+            await client.send_message(target, processed, link_preview=False)
     except Exception as e:
-        logger.error(f"Failed to send message id {message.id} to chat {target_chat_id}: {e}")
+        logger.error(f"Failed to forward message {msg.id} to {target}: {e}")
 
-# Utility: construct message link
-async def get_message_link(channel_username, message_id):
-    try:
-        ent = await client.get_entity(channel_username)
-        if hasattr(ent, 'username') and ent.username:
-            link = f"https://t.me/{ent.username}/{message_id}"
-            logger.debug(f"Constructed message link: {link}")
-            return link
-        else:
-            logger.debug(f"No username found for entity {channel_username}")
-            return ''
-    except Exception as e:
-        logger.warning(f"Failed to construct message link for {channel_username} {message_id}: {e}")
-        return ''
-
-# Channel management commands
-async def add_channel(channel_id, lst, fname):
-    match = re.match(r'(https?://t\.me/)?(?P<u>\w+)', channel_id)
-    if not match:
-        logger.warning(f"Invalid channel format: {channel_id}")
+# Single event handler
+async def on_new(event):
+    msg = event.message
+    cid = msg.chat.id
+    if not cid or not msg or msg.out or msg.via_bot_id:
         return
-    username = match.group('u')
-    entry = f"@{username}"
-    if entry not in lst:
-        lst.append(entry)
-        with open(f'{fname}_channels.txt','a') as f:
-            f.write(username + '\n')
-        logger.info(f"Added channel @{username} to {fname}_channels.txt and list.")
-        await join_channel(username)
-    else:
-        logger.info(f"Channel @{username} already in {fname} list.")
+    if cid == OWNER_ID and msg.text and msg.text.startswith('/'):
+        # handle owner commands...
+        return
+    if cid in arab_ids:
+        await forward_message(msg, ARABS_CHAT)
+    elif cid in smart_ids:
+        if '°תוכן שיווקי' in (msg.text or ''):
+            return
+        await forward_message(msg, SMART_CHAT)
 
-async def remove_channel(channel_id, lst):
-    if channel_id in lst:
-        lst.remove(channel_id)
-        logger.info(f"Removed channel {channel_id} from list.")
-    else:
-        logger.info(f"Channel {channel_id} not found in list.")
-
-async def list_channels(chat_id):
-    msg = f"Arab channels: {arab_channels}\nSmart channels: {smart_channels}"
-    logger.info(f"Listing channels to chat {chat_id}")
-    await client.send_message(chat_id, msg)
-
-async def command_handler(command, chat_id, args):
-    cmds = {
-        'add_arab': lambda: add_channel(args[0], arab_channels, 'arab'),
-        'add_smart': lambda: add_channel(args[0], smart_channels, 'smart'),
-        'remove': lambda: remove_channel(args[0], arab_channels),
-        'list': lambda: list_channels(chat_id),
-    }
-    if command in cmds:
-        logger.info(f"Executing command: {command} with args: {args}")
-        await cmds[command]()
-    else:
-        logger.warning(f"Unknown command: {command}")
-
-# Entry point
-
-def main():
-    logger.info("Starting Telegram Forwarder Bot...")
-    client.start(phone=lambda: PHONE)
-    logger.info("Telegram client started.")
-    client.loop.run_until_complete(join_all_channels())
-    logger.info("All channels joined. Adding event handlers.")
-    client.add_event_handler(general_handler, events.NewMessage)
-    client.add_event_handler(arab_handler, events.NewMessage(chats=arab_channels))
-    client.add_event_handler(smart_handler, events.NewMessage(chats=smart_channels))
-    logger.info("Event handlers added. Bot is running.")
-    client.run_until_disconnected()
-    logger.info("Bot stopped.")
+# Main entry point
+async def main():
+    await client.start(phone=lambda: PHONE)
+    logger.info("Client started")
+    ids = await init_channels()
+    global arab_ids, smart_ids
+    arab_ids = {ids.get(name.lower()) for name in arab_channels if name.lower() in ids}
+    smart_ids = {ids.get(name.lower()) for name in smart_channels if name.lower() in ids}
+    client.add_event_handler(on_new, events.NewMessage(incoming=True))
+    logger.info("Handlers registered. Bot is running.")
+    await client.run_until_disconnected()
 
 if __name__ == '__main__':
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
