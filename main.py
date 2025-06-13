@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Load environment
-DEV = os.getenv('DEV_MODE', 'false').lower() == 'true'
+DEV = os.getenv('DEV_MODE', 'false').lower() == 'true' 
 config_file = 'config_dev.env' if DEV else 'config.env'
 load_dotenv(dotenv_path=Path(config_file))
 
