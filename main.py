@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import re
 import sys
@@ -8,13 +9,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, errors
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
 from deep_translator import GoogleTranslator
 from easygoogletranslate import EasyGoogleTranslate
 from langdetect import detect
 
 # ------------------------
-# Configuration & Logging
+# Configuration & Logging 
 # ------------------------
 logging.basicConfig(
     stream=sys.stdout,
@@ -29,18 +31,16 @@ config_file = "config_dev.env" if DEV else "config.env"
 load_dotenv(dotenv_path=Path(config_file))
 
 # Credentials
-API_ID = int(os.getenv("TELEGRAM_API_ID", "0"))
-API_HASH = os.getenv("TELEGRAM_API_HASH")
-PHONE = os.getenv("PHONE_NUMBER")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-ARABS_CHAT = int(os.getenv("ARABS", "0"))
-SMART_CHAT = int(os.getenv("SMART", "0"))
+API_ID      = int(os.getenv("TELEGRAM_API_ID", "0"))
+API_HASH    = os.getenv("TELEGRAM_API_HASH")
+PHONE       = os.getenv("PHONE_NUMBER")
+ARABS_CHAT  = int(os.getenv("ARABS", "0"))
+SMART_CHAT  = int(os.getenv("SMART", "0"))
 
 for name, val in [
     ("TELEGRAM_API_ID", API_ID),
     ("TELEGRAM_API_HASH", API_HASH),
     ("PHONE_NUMBER", PHONE),
-    ("OWNER_ID", OWNER_ID),
     ("ARABS", ARABS_CHAT),
     ("SMART", SMART_CHAT),
 ]:
@@ -53,7 +53,7 @@ session = "bot-dev" if DEV else "bot"
 client = TelegramClient(session, API_ID, API_HASH)
 
 # Translators
-translator = GoogleTranslator(source="auto", target="iw")
+translator        = GoogleTranslator(source="auto", target="iw")
 backup_translator = EasyGoogleTranslate()
 
 # Blocked keywords
@@ -78,12 +78,11 @@ def load_channels_from_file():
     for fname, lst in [("arab", arab_channels), ("smart", smart_channels)]:
         path = Path(f"{fname}_channels.txt")
         if path.is_file():
-            with path.open() as f:
-                for line in f:
-                    name = line.strip().lstrip("@")
-                    if name and name not in lst:
-                        lst.append(name)
-                        logger.info(f"Loaded channel {name} from {fname}_channels.txt")
+            for line in path.read_text().splitlines():
+                name = line.strip().lstrip("@")
+                if name and name not in lst:
+                    lst.append(name)
+                    logger.info(f"Loaded channel {name} from {fname}_channels.txt")
 
 async def init_channels():
     load_channels_from_file()
@@ -103,11 +102,19 @@ async def init_channels():
             ent = await client.get_entity(u)
             ids[u] = ent.id
         except errors.FloodWaitError as e:
-            logger.warning(f"Flood-wait on @{u}, sleeping {e.seconds}s")
+            logger.warning(f"Rate-limited on @{u}, sleeping {e.seconds}s")
             await asyncio.sleep(e.seconds)
         except Exception as e:
-            logger.error(f"Error handling @{u}: {e}")
+            logger.error(f"Error with @{u}: {e}")
     return ids
+
+async def keep_online():
+    while True:
+        try:
+            await client(UpdateStatusRequest(offline=False))
+        except Exception as e:
+            logger.warning(f"keep_online error: {e}")
+        await asyncio.sleep(60)
 
 async def get_message_link(chat_id, msg_id):
     try:
@@ -129,15 +136,15 @@ async def process_message(msg):
         return None
     try:
         lang = detect(text)
-    except Exception:
+    except:
         lang = "iw"
     if lang not in ("he", "iw"):
         try:
             text = translator.translate(text)
-        except Exception:
+        except:
             try:
                 text = backup_translator.translate(text, "iw")
-            except Exception:
+            except:
                 text = "[Translation failed]\n" + text
     link = await get_message_link(msg.chat_id, msg.id)
     return f"{text}\n\n{link}"
@@ -155,7 +162,7 @@ async def check_duplicate(dest, cap, msg):
                 return True
             if m.message == cap:
                 return True
-    except Exception:
+    except:
         pass
     return False
 
@@ -169,33 +176,60 @@ async def forward_message(msg, target):
         await client.send_message(target, cap, link_preview=False)
 
 async def on_new(event):
-    logger.debug(f"on_new fired: chat_id={event.chat_id}, msg_id={event.message.id}")
     msg = event.message
     if msg.out or msg.via_bot_id:
         return
-
     cid = event.chat_id
     if cid in arab_ids:
-        logger.info(f"Received {msg.id} in Arab channel ({cid})")
+        logger.info(f"[live] Arab msg {msg.id} in {cid}")
         await forward_message(msg, ARABS_CHAT)
     elif cid in smart_ids:
         if "°תוכן שיווקי" in (msg.text or ""):
             return
-        logger.info(f"Received {msg.id} in Smart channel ({cid})")
+        logger.info(f"[live] Smart msg {msg.id} in {cid}")
         await forward_message(msg, SMART_CHAT)
+
+async def poll_channel(uname, cid, target):
+    # initialize last_id to the newest existing message
+    msgs = await client.get_messages(uname, limit=1)
+    last_id = msgs[0].id if msgs else 0
+
+    while True:
+        try:
+            async for msg in client.iter_messages(uname, min_id=last_id):
+                # iter_messages yields only msg.id > last_id
+                logger.info(f"[poll] New {msg.id} in {cid}")
+                await forward_message(msg, target)
+                last_id = msg.id
+        except errors.FloodWaitError as e:
+            logger.warning(f"Poll flood-wait on {uname}: {e.seconds}s")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            logger.error(f"Error polling {uname}: {e}")
+        await asyncio.sleep(30)
 
 async def main():
     await client.start(phone=lambda: PHONE)
     logger.info("Client started")
-
+    client.loop.create_task(keep_online())
+    # preload dialogs so events fire
+    await client.get_dialogs()
     ids = await init_channels()
     global arab_ids, smart_ids
-    arab_ids = {ids[u] for u in arab_channels if u in ids}
+    arab_ids  = {ids[u] for u in arab_channels if u in ids}
     smart_ids = {ids[u] for u in smart_channels if u in ids}
 
+    # live handler
     client.add_event_handler(on_new, events.NewMessage())
-    logger.info("Event handler registered; bot is running.")
 
+    # start polling for channels that don't push
+    for uname, cid in ids.items():
+        if cid in arab_ids:
+            asyncio.create_task(poll_channel(uname, cid, ARABS_CHAT))
+        elif cid in smart_ids:
+            asyncio.create_task(poll_channel(uname, cid, SMART_CHAT))
+
+    logger.info("Handlers & pollers running; bot is live.")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
