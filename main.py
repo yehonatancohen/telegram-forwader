@@ -364,32 +364,41 @@ if SMART_CHAT:
 # Main entrypoint
 # -----------------
 async def main():
+    print("Starting Arab AI Bot...")
     start_http_server(PROM_PORT)
+    print(f"Prometheus metrics server started on port {PROM_PORT}")
     await client.start(phone=lambda: PHONE)
+    print("Telegram client started.")
 
     arab_usernames = await load_usernames(SOURCES_FILE)
+    print(f"Loaded {len(arab_usernames)} arab source channels.")
     await ensure_join(arab_usernames)
+    print("Joined arab channels.")
 
     arab_ids = [await client.get_peer_id(f"@{u}") for u in arab_usernames]
     client.add_event_handler(lambda e: asyncio.create_task(process_arab(e.message)), events.NewMessage(chats=arab_ids))
+    print("Event handler for arab channels registered.")
     for u in arab_usernames:
         asyncio.create_task(poll_channel(u, process_arab))
+        print(f"Started polling for arab channel: {u}")
 
     if SMART_CHAT:
         global smart_usernames
         smart_usernames = await load_usernames(SMART_SOURCES_FILE)
+        print(f"Loaded {len(smart_usernames)} smart source channels.")
         await ensure_join(smart_usernames)
+        print("Joined smart channels.")
         smart_ids = [await client.get_peer_id(f"@{u}") for u in smart_usernames]
         client.add_event_handler(lambda e: asyncio.create_task(smart_handler(e.message)), events.NewMessage(chats=smart_ids))
+        print("Event handler for smart channels registered.")
         for u in smart_usernames:
             asyncio.create_task(poll_channel(u, smart_handler))
+            print(f"Started polling for smart channel: {u}")
         logger.info("Smart forwarder active: %d channels", len(smart_usernames))
 
     logger.info("Bot online. Arab=%d Smart=%d", len(arab_usernames), len(smart_usernames))
+    print("Bot is online and running.")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutdown")
+    asyncio.run(main())
