@@ -2,7 +2,7 @@ cryptography==40.0.2
 deep_translator==1.11.4
 easygoogletranslate==0.0.4
 langdetect==1.0.9
-python-dotenv==1.0.1
-requests==2.28.1
+prometheus_client==0.22.1
+python-dotenv==1.1.0
 Telethon==1.35.0
-prometheus_client
+transformers==4.52.4
