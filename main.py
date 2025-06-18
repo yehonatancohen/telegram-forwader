@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import re
 import sys
 import time
 import httpx
+import hashlib
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,8 +21,6 @@ from telethon import TelegramClient, events, errors
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Message, MessageMediaDocument, MessageMediaPhoto
 from transformers import pipeline, Pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
-import hashlib
-from collections import deque
 
 # -------------------------
 # Configuration & Logging
@@ -70,7 +68,15 @@ HEADERS = {"Authorization": f"Bearer {CF_TOKEN}"}
 # remember the last N unique messages / media objects
 _RECENT: deque[str] = deque(maxlen=2_000)   # tune size to your traffic
 
-required = [("TELEGRAM_API_ID", API_ID), ("TELEGRAM_API_HASH", API_HASH), ("PHONE_NUMBER", PHONE), ("ARABS_SUMMARY_OUT", ARABS_SUMMARY_OUT)]
+required = [
+    ("TELEGRAM_API_ID", API_ID),
+    ("TELEGRAM_API_HASH", API_HASH),
+    ("PHONE_NUMBER", PHONE),
+    ("ARABS_SUMMARY_OUT", ARABS_SUMMARY_OUT),
+    ("CF_ACCOUNT_ID", CF_ACCOUNT),
+    ("CF_API_TOKEN", CF_TOKEN),
+]
+
 for n, v in required:
     if not v:
         logger.error("Missing env var %s", n)
