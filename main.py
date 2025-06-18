@@ -215,7 +215,6 @@ batcher = BatchCollector(BATCH_SIZE, MAX_BATCH_AGE)
 async def build_and_send_summary(msgs: List[MessageInfo]):
     msg_count = len(msgs)
     ch_count = len({m.channel for m in msgs})
-    header = f"🗞️ סיכום ({msg_count} הודעות, {ch_count} ערוצים)\n\n"
 
     msg_blob = "\n".join(m.msg for m in msgs)[:2500]
     try:
@@ -224,13 +223,12 @@ async def build_and_send_summary(msgs: List[MessageInfo]):
         logger.error("Summariser failed: %s", e)
         return
 
-    full_text = header + summ
-    await client.send_message(ARABS_SUMMARY_OUT, full_text, link_preview=False)
+    await client.send_message(ARABS_SUMMARY_OUT, summ, link_preview=False)
     SUMMARY_SENT.inc()
 
     # log summary & links
     links = [m.link for m in msgs if m.link]
-    logger.info("SUMMARY SENT → %s", full_text.replace("\n", " | ")[:300])
+    logger.info("SUMMARY SENT → %s", summ.replace("\n", " | ")[:300])
     if links:
         logger.info("Source links: %s", ", ".join(links))
 
