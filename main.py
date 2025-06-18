@@ -12,7 +12,6 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Deque, List, Optional, Set
-
 from deep_translator import GoogleTranslator
 from dotenv import load_dotenv
 from langdetect import detect
@@ -20,7 +19,7 @@ from prometheus_client import Counter as PmCounter, start_http_server
 from telethon import TelegramClient, events, errors
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Message, MessageMediaDocument, MessageMediaPhoto
-from transformers import pipeline, Pipeline
+from transformers import pipeline, Pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
 
 # -------------------------
 # Configuration & Logging
@@ -68,12 +67,23 @@ for n, v in required:
 # --------------
 # AI components
 # --------------
-MODEL = os.getenv("SUMMARY_MODEL", "facebook/bart-large-cnn")
+MODEL = os.getenv("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
 logger.info("Loading summariser %s", MODEL)
+USE_8BIT = os.getenv("USE_8BIT", "false").lower() == "true"
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+model = AutoModelForSeq2SeqLM.from_pretrained(
+    MODEL,
+    load_in_8bit=USE_8BIT,              # needs bitsandbytes, see requirements
+    device_map="auto"                   # CPU only → stays on RAM
+)
+
 summary_model: Pipeline = pipeline(
     "summarization",
-    model=MODEL,
-    device="cuda:0" if os.getenv("USE_CUDA", "false").lower() == "true" else -1,
+    model=model,
+    tokenizer=tokenizer,
+    framework="pt",
+    device=-1                           # force CPU, avoids CUDA libs
 )
 translator_he = GoogleTranslator(source="auto", target="iw")
 translator_en = GoogleTranslator(source="auto", target="en")
