@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+import httpx
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ from telethon import TelegramClient, events, errors
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Message, MessageMediaDocument, MessageMediaPhoto
 from transformers import pipeline, Pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+import hashlib
+from collections import deque
 
 # -------------------------
 # Configuration & Logging
@@ -58,39 +61,52 @@ PROM_PORT = int(os.getenv("PROM_PORT", "9000"))
 SOURCES_FILE = Path(os.getenv("ARAB_SOURCES_FILE", "arab_channels.txt"))
 SMART_SOURCES_FILE = Path(os.getenv("SMART_SOURCES_FILE", "smart_channels.txt"))
 
+CF_ACCOUNT = os.getenv("CF_ACCOUNT_ID")
+CF_TOKEN   = os.getenv("CF_API_TOKEN")
+CF_MODEL   = os.getenv("CF_MODEL", "@cf/google/gemma-3-12b-it")
+CF_URL = f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/{CF_MODEL}"
+HEADERS = {"Authorization": f"Bearer {CF_TOKEN}"}
+
+# remember the last N unique messages / media objects
+_RECENT: deque[str] = deque(maxlen=2_000)   # tune size to your traffic
+
 required = [("TELEGRAM_API_ID", API_ID), ("TELEGRAM_API_HASH", API_HASH), ("PHONE_NUMBER", PHONE), ("ARABS_SUMMARY_OUT", ARABS_SUMMARY_OUT)]
 for n, v in required:
     if not v:
         logger.error("Missing env var %s", n)
         sys.exit(1)
 
-# --------------
-# AI components
-# --------------
-MODEL = os.getenv("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
-logger.info("Loading summariser %s", MODEL)
-USE_8BIT = os.getenv("USE_8BIT", "false").lower() == "true"
+async def remote_summary(text_en: str) -> str:
+    """
+    Call Cloudflare Workers AI and return an English summary.
+    """
+    payload = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "אתה עורך חדשות מנוסה. כתוב סיכום תמציתי ואובייקטיבי של המאמר של המשתמש ב-5 עד 7 משפטים קצרים ומובנים היטב. "
+                    "שמור על סדר כרונולוגי, ציין דמויות ומספרים מרכזיים פעם אחת, הימנע מדעה אישית, והשתמש בסגנון עיתונאי רשמי."
+                    "תשלח את הסיכום בלבד, ללא הקדמות או הסברים נוספים."
+                )
+            },
+            {
+                "role": "user",
+                "content": text_en[:5000] 
+            }
+        ]
+    }
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = AutoModelForSeq2SeqLM.from_pretrained(
-    MODEL,
-    load_in_8bit=USE_8BIT,              # needs bitsandbytes, see requirements
-    device_map="auto"                   # CPU only → stays on RAM
-)
-
-summary_model: Pipeline = pipeline(
-    "summarization",
-    model=model,
-    tokenizer=tokenizer,
-    framework="pt",
-    device=-1                           # force CPU, avoids CUDA libs
-)
-translator_he = GoogleTranslator(source="auto", target="iw")
-translator_en = GoogleTranslator(source="auto", target="en")
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(CF_URL, headers=HEADERS, json=payload)
+    r.raise_for_status()
+    data = r.json()
+    return data["result"]["response"].strip()
 
 # ----------
 # Telethon
 # ----------
+
 client = TelegramClient(SESSION, API_ID, API_HASH)
 
 # -------------
@@ -113,8 +129,7 @@ recent_hashes: Deque[str] = deque(maxlen=HASH_CACHE_SIZE)
 
 @dataclass
 class MessageInfo:
-    eng: str
-    heb: str
+    msg: str
     link: str
     channel: str
     media_id: Optional[str]
@@ -190,15 +205,14 @@ async def build_and_send_summary(msgs: List[MessageInfo]):
     ch_count = len({m.channel for m in msgs})
     header = f"🗞️ סיכום ({msg_count} הודעות, {ch_count} ערוצים)\n\n"
 
-    eng_blob = "\n".join(m.eng for m in msgs)[:4096]
+    msg_blob = "\n".join(m.msg for m in msgs)[:2500]
     try:
-        summ_en = summary_model(eng_blob, max_length=180, min_length=60, do_sample=False)[0]["summary_text"]
+        summ = await remote_summary(msg_blob)
     except Exception as e:
         logger.error("Summariser failed: %s", e)
         return
-    summ_he = translator_he.translate(summ_en)
 
-    full_text = header + summ_he
+    full_text = header + summ
     await client.send_message(ARABS_SUMMARY_OUT, full_text, link_preview=False)
     SUMMARY_SENT.inc()
 
@@ -237,9 +251,7 @@ async def process_arab(msg: Message):
         lang = detect(cleaned)
     except Exception:
         lang = "ar"
-    eng = translator_en.translate(cleaned) if lang != "en" else cleaned
-    heb = translator_he.translate(cleaned) if lang != "he" else cleaned
-    await batcher.push(MessageInfo(eng, heb, permalink(msg), getattr(msg.chat, "username", ""), await media_sha(msg)))
+    await batcher.push(MessageInfo(cleaned, permalink(msg), getattr(msg.chat, "username", ""), await media_sha(msg)))
     MSG_TOTAL.inc()
 
 # -------------
@@ -329,37 +341,57 @@ if SMART_CHAT:
         # De-duplicate just in case and keep original chronological order
         album = [m for _, m in sorted({m.id: m for m in album}.items())]
         return album
+    
+    def _dedup_key(msg: Message) -> str:
+        if msg.grouped_id:                           # photo/video album
+            return f"album:{msg.grouped_id}"
+        if msg.photo:                                # single photo
+            return f"photo:{msg.photo.id}"
+        if msg.document:                             # any other file
+            return f"doc:{msg.document.id}"
+        # pure-text → hash the text after stripping whitespace
+        digest = hashlib.sha1((msg.text or "").strip().encode()).hexdigest()
+        return f"text:{digest}"
+
 
     async def smart_handler(msg: Message):
         """
-        Forward messages to SMART_CHAT, preserving any media (single file or album)
-        and appending a deep-link to the original message.
+        Forward messages to SMART_CHAT once only, preserving albums & media and
+        appending a deep-link to the original message.
         """
+
+        # ❶ ignore our own or bot messages
         if msg.out or msg.via_bot_id:
-            return  # ignore our own messages and bot-generated content
+            return
+
+        # ❷ deduplicate
+        key = _dedup_key(msg)
+        if key in _RECENT:
+            return                       # we forwarded this already
+        _RECENT.append(key)
 
         try:
-            link = await get_message_link(msg.chat_id, msg.id)
+            link    = await get_message_link(msg.chat_id, msg.id)
             caption = f"{msg.text or ''}\n\n{link}".strip()
 
-            # Grab the full album if necessary
+            # ❸ for albums: handle *only* the first message in the group
             items = await _collect_album(msg)
+            if msg.grouped_id and msg.id != min(i.id for i in items):
+                return                   # let the first item do the forwarding
+
             has_media = any(x.media for x in items)
 
             if not has_media:
-                # Plain text message
                 await client.send_message(
                     SMART_CHAT,
-                    caption or link,          # ensure we send *something*
+                    caption or link,
                     link_preview=False,
                 )
             else:
-                # Single media or album → Telethon treats a list as an album
-                files = [itm if itm.media else itm.media for itm in items]
                 await client.send_file(
                     SMART_CHAT,
-                    files,                    # accepts Message objects directly
-                    caption=caption,          # caption is shown only once
+                    items,               # Telethon accepts a list for albums
+                    caption=caption,
                     link_preview=False,
                 )
 
@@ -369,6 +401,7 @@ if SMART_CHAT:
             logger.debug("Smart skip – %s", exc)
         except Exception as exc:
             logger.error("Smart fwd error: %s", exc)
+
 
 # -----------------
 # Main entrypoint
