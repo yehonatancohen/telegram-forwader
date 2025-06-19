@@ -3,6 +3,7 @@
 *.session
 *.session-journal
 *.key
+*.pyc
 session_enc.py
 clean_data.py
 test.py
