@@ -6,6 +6,8 @@
 session_enc.py
 clean_data.py
 test.py
+encrypt.py
+/arabtest
 !requirements.txt
 !arab_channels.txt
 !smart_channels.txt
