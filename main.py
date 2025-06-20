@@ -32,6 +32,7 @@ API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 PHONE    = os.getenv("PHONE_NUMBER")
 SESSION  = os.getenv("SESSION_NAME", "arab-ai")
+SESSION_PATH = Path(SESSION).expanduser().resolve()
 
 ARABS_SUMMARY_OUT = int(os.getenv("ARABS_SUMMARY_OUT", "0"))
 SMART_CHAT        = int(os.getenv("SMART_CHAT", "0"))
@@ -167,11 +168,16 @@ def _load_usernames(path: Path) -> List[str]:
     return names
 
 # ─── telegram client & main ──────────────────────────────────────────────
-client = TelegramClient(SESSION, API_ID, API_HASH, connection_retries=-1, retry_delay=5, timeout=10)
+client = TelegramClient(str(SESSION_PATH), API_ID, API_HASH, connection_retries=-1, retry_delay=5, timeout=10)
 
 async def main():
     await client.start(phone=lambda: PHONE)
-    logger.info("client authorised as %s", PHONE)
+    if not client.is_user_authorized():
+        logger.critical("🛑  Telethon entered interactive login — "
+                        "the .session file is missing or unwritable.")
+        sys.exit(1)
+
+    logger.info("✅  client authorised as %s", PHONE)
 
     arab  = _load_usernames(SOURCES_FILE)
     smart = _load_usernames(SMART_SOURCES_FILE)
