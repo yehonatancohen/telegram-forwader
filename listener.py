@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Callable, Deque, Dict, List, Optional, Sequence, Set, Tuple
@@ -133,6 +134,9 @@ async def init_listeners(
         try:
             cli = TelegramClient(cfg["session"], cfg["api_id"], cfg["api_hash"], connection_retries=-1, retry_delay=5, timeout=10)
             await cli.start(phone=lambda: cfg.get("phone", ""))
+            if not cli.is_user_authorized():
+                logger.critical("No valid .session – aborting to avoid hang")
+                sys.exit(1)
             pool.append((cli, False))
             logger.info("🔌 reader %s connected", cfg["session"])
         except Exception as e:
