@@ -172,23 +172,25 @@ async def init_listeners(
             _RECENT_MEDIA.append(key)
             items = await _collect_album(origin, msg)
 
-            # ▶︎ NEW: drop album elements that have no media (Telegram bug-workaround)
-            items_media = [i for i in items if i.media]
-            if not items_media:                       # nothing left; just text
-                await client.send_message(smart_chat_id, caption, link_preview=False)
+            # NEW ▸ drop elements that lack real media
+            items = [i for i in items if i.media]
+            if not items:                                  # nothing to forward
+                await client.send_message(
+                    smart_chat_id, caption, link_preview=False
+                )
                 return
 
             caption = f"{msg.text or ''}\\n\\n{await _get_link(origin, ...)}".strip()
 
-            if len(items_media) == 1:                 # single photo/doc
-                await client.send_file(smart_chat_id, items_media[0],
+            if len(items) == 1:                 # single photo/doc
+                await client.send_file(smart_chat_id, items[0],
                                     caption=caption, link_preview=False)
             else:                                     # true album
-                await client.send_file(smart_chat_id, items_media,
+                await client.send_file(smart_chat_id, items,
                                     caption=caption, link_preview=False)
 
             logger.info("➡️  smart fwd from %s id=%s (%d items)",
-                        getattr(msg.chat, "username", "?"), msg.id, len(items_media))
+                        getattr(msg.chat, "username", "?"), msg.id, len(items))
 
         return _smart
 
