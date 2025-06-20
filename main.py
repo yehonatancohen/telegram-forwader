@@ -32,6 +32,8 @@ API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 PHONE    = os.getenv("PHONE_NUMBER")
 SESSION  = os.getenv("SESSION_NAME", "arab-ai")
+if not SESSION.endswith(".session"):
+    SESSION += ".session"
 SESSION_PATH = Path(SESSION).expanduser().resolve()
 
 ARABS_SUMMARY_OUT = int(os.getenv("ARABS_SUMMARY_OUT", "0"))
