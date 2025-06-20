@@ -178,7 +178,7 @@ async def main():
         logger.critical("Session file %s does not exist – aborting", SESSION_PATH)
         sys.exit(1)
     await client.start(phone=lambda: PHONE)
-    if not client.is_user_authorized():
+    if not await client.is_user_authorized():
         logger.critical("🛑  Telethon entered interactive login — "
                         "the .session file is missing or unwritable.")
         sys.exit(1)

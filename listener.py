@@ -134,7 +134,7 @@ async def init_listeners(
         try:
             cli = TelegramClient(cfg["session"], cfg["api_id"], cfg["api_hash"], connection_retries=-1, retry_delay=5, timeout=10)
             await cli.start(phone=lambda: cfg.get("phone", ""))
-            if not cli.is_user_authorized():
+            if not await cli.is_user_authorized():
                 logger.critical("No valid .session – aborting to avoid hang")
                 sys.exit(1)
             pool.append((cli, False))
@@ -171,12 +171,25 @@ async def init_listeners(
                 return
             _RECENT_MEDIA.append(key)
             items = await _collect_album(origin, msg)
-            caption = f"{msg.text or ''}\n\n{await _get_link(origin, msg.chat_id, msg.id)}".strip()
-            if any(i.media for i in items):
-                await client.send_file(smart_chat_id, items, caption=caption, link_preview=False)
-            else:
+
+            # ▶︎ NEW: drop album elements that have no media (Telegram bug-workaround)
+            items_media = [i for i in items if i.media]
+            if not items_media:                       # nothing left; just text
                 await client.send_message(smart_chat_id, caption, link_preview=False)
-            logger.info("➡️  smart fwd from %s id=%s (%d items)", getattr(msg.chat, "username", "?"), msg.id, len(items))
+                return
+
+            caption = f"{msg.text or ''}\\n\\n{await _get_link(origin, ...)}".strip()
+
+            if len(items_media) == 1:                 # single photo/doc
+                await client.send_file(smart_chat_id, items_media[0],
+                                    caption=caption, link_preview=False)
+            else:                                     # true album
+                await client.send_file(smart_chat_id, items_media,
+                                    caption=caption, link_preview=False)
+
+            logger.info("➡️  smart fwd from %s id=%s (%d items)",
+                        getattr(msg.chat, "username", "?"), msg.id, len(items_media))
+
         return _smart
 
     _smap: Dict[TelegramClient, Callable[[Message], asyncio.Future]] = {}
