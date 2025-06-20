@@ -171,6 +171,10 @@ def _load_usernames(path: Path) -> List[str]:
 client = TelegramClient(str(SESSION_PATH), API_ID, API_HASH, connection_retries=-1, retry_delay=5, timeout=10)
 
 async def main():
+    logger.info("Starting Telegram client with session: %s", SESSION_PATH)
+    if not SESSION_PATH.is_file():
+        logger.critical("Session file %s does not exist – aborting", SESSION_PATH)
+        sys.exit(1)
     await client.start(phone=lambda: PHONE)
     if not client.is_user_authorized():
         logger.critical("🛑  Telethon entered interactive login — "
