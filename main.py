@@ -20,7 +20,7 @@ from listener import MessageInfo, init_listeners
 
 # ─── configuration & logging ─────────────────────────────────────────────
 load_dotenv(Path("config_dev.env") if os.getenv("DEV") else Path("config.env"))
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
 logging.basicConfig(stream=sys.stdout,
                     level=getattr(logging, LOG_LEVEL, logging.INFO),
                     format="%(asctime)s %(levelname)s | %(message)s",
