@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
+# listener.py – multi-account readers + smart forwarder
+# -----------------------------------------------------
+# * Main client = sender; N “readers” defined in $TG_READERS_JSON
+# * Ignores history before START_TS
+# * Filters phantom album items; falls back to forward if send_file fails
+
 from __future__ import annotations
 
 import asyncio, hashlib, json, logging, os, re, sys, time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Deque, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -15,14 +21,14 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger("listener")
 
-# ─── constants / helpers ──────────────────────────────────────────────────
+# ─── constants / caches ───────────────────────────────────────────────────
 URL_RE = re.compile(r"(https?://)?(t\.me|telegram\.me)/(joinchat/|[\w\d_-]+)")
 BLOCKLIST: Set[str] = {
     "צבע אדום", "גרם", "היכנסו למרחב המוגן", "חדירת כלי טיס עוין",
 }
-_DUP_TEXT_CACHE: Deque[str]  = deque(maxlen=500)
-_RECENT_MEDIA:   Deque[str]  = deque(maxlen=2_000)
-START_TS = time.time()       # ignore anything older than launch
+_DUP_TEXT:   Deque[str] = deque(maxlen=500)
+_DUP_MEDIA:  Deque[str] = deque(maxlen=2_000)
+START_TS = time.time()          # ignore messages earlier than this
 
 @dataclass
 class MessageInfo:
@@ -31,46 +37,48 @@ class MessageInfo:
     channel: str
     media_id: Optional[str]
 
-# ─── tiny utils ───────────────────────────────────────────────────────────
-def _clean_text(t: str) -> str:
+# ─── tiny helpers ─────────────────────────────────────────────────────────
+def _clean(t: str) -> str:
     return re.sub(r"\s+", " ", URL_RE.sub("", t)).strip()
 
-def _blocked(t: str) -> bool:
-    return any(k in t for k in BLOCKLIST)
-
-async def _media_sha(msg: Message) -> Optional[str]:
-    if not isinstance(msg.media, (MessageMediaPhoto, MessageMediaDocument)):
-        return None
-    try:
-        raw: bytes = await msg.download_media(bytes)
-        return hashlib.sha256(raw[:262144]).hexdigest()
-    except Exception as e:
-        logger.debug("media-sha fail id=%s: %s", msg.id, e)
-        return None
-
-def _permalink(msg: Message) -> str:
-    if getattr(msg.chat, "username", None):
-        return f"https://t.me/{msg.chat.username}/{msg.id}"
-    return ""
-
-def _is_dup_text(text: str) -> bool:
-    h = hashlib.sha1(text.encode()).hexdigest()
-    if h in _DUP_TEXT_CACHE:
+def _txt_dup(t: str) -> bool:
+    h = hashlib.sha1(t.encode()).hexdigest()
+    if h in _DUP_TEXT:
         return True
-    _DUP_TEXT_CACHE.append(h)
+    _DUP_TEXT.append(h)
     return False
 
-def _dedup_key(msg: Message) -> str:
-    if msg.grouped_id:    return f"album:{msg.grouped_id}"
-    if msg.photo:         return f"photo:{msg.photo.id}"
-    if msg.document:      return f"doc:{msg.document.id}"
-    return f"text:{hashlib.sha1((msg.text or '').strip().encode()).hexdigest()}"
+def _media_key(m: Message) -> str:
+    if m.grouped_id: return f"album:{m.grouped_id}"
+    if m.photo:      return f"photo:{m.photo.id}"
+    if m.document:   return f"doc:{m.document.id}"
+    return f"text:{hashlib.sha1((m.text or '').encode()).hexdigest()}"
 
-async def _collect_album(cli: TelegramClient, m: Message) -> List[Message]:
+async def _media_sha(m: Message) -> Optional[str]:
+    if not isinstance(m.media, (MessageMediaPhoto, MessageMediaDocument)):
+        return None
+    try:
+        raw = await m.download_media(bytes)  # first 256 KiB is enough
+        return hashlib.sha256(raw[:262144]).hexdigest()
+    except Exception:
+        return None
+
+async def _link(cli: TelegramClient, chat_id: int, msg_id: int) -> str:
+    try:
+        e = await cli.get_entity(chat_id)
+        if (u := getattr(e, "username", None)):
+            return f"https://t.me/{u}/{msg_id}"
+    except Exception:
+        pass
+    return ""
+
+async def _album(cli: TelegramClient, m: Message) -> List[Message]:
+    """Return *all* siblings of an album, sans dups, sans history rewind."""
     if not m.grouped_id:
         return [m]
     res: List[Message] = [m]
-    async for prev in cli.iter_messages(m.chat_id, offset_id=m.id, reverse=True, limit=20):
+    async for prev in cli.iter_messages(m.chat_id, offset_id=m.id,
+                                        reverse=True, limit=20):
         if prev.grouped_id != m.grouped_id or prev.date.timestamp() < START_TS:
             break
         res.insert(0, prev)
@@ -78,27 +86,20 @@ async def _collect_album(cli: TelegramClient, m: Message) -> List[Message]:
         if nxt.grouped_id != m.grouped_id or nxt.date.timestamp() < START_TS:
             break
         res.append(nxt)
+    # unique & ordered
     return [x for _, x in sorted({x.id: x for x in res}.items())]
 
-async def _get_link(cli: TelegramClient, chat_id: int, msg_id: int) -> str:
-    try:
-        ent = await cli.get_entity(chat_id)
-        if (u := getattr(ent, "username", None)):
-            return f"https://t.me/{u}/{msg_id}"
-    except Exception:
-        pass
-    return ""
-
-# ─── entrypoint ───────────────────────────────────────────────────────────
+# ─── main init_listeners ──────────────────────────────────────────────────
 async def init_listeners(
     *,
-    client: TelegramClient,
+    client: TelegramClient,               # main (sending) account
     arab_channels: Sequence[str],
     smart_channels: Sequence[str] | None,
-    batch_push: Callable[[MessageInfo], "asyncio.Future | asyncio.Task | None"],
+    batch_push: Callable[[MessageInfo], "asyncio.Future|asyncio.Task|None"],
     smart_chat_id: int | None = None,
     max_req_per_min: int = 18,
     scan_batch_limit: int = 100,
+    round_gap: int = 300,
 ):
     # 0 ░ build pool -------------------------------------------------------
     pool: List[Tuple[TelegramClient, bool]] = [(client, True)]
@@ -108,7 +109,7 @@ async def init_listeners(
                                  connection_retries=-1, retry_delay=5, timeout=10)
             await cli.start(phone=lambda: cfg.get("phone", ""))
             if not await cli.is_user_authorized():
-                logger.critical("%s not authorised – check .session", cfg["session"])
+                logger.warning("%s not authorised – skip", cfg["session"])
                 continue
             pool.append((cli, False))
             logger.info("🔌 reader %s connected", cfg["session"])
@@ -118,48 +119,58 @@ async def init_listeners(
     n = len(pool)
     logger.info("👥 %d clients active", n)
 
-    # 1 ░ split channels ---------------------------------------------------
+    # 1 ░ distribute channels ---------------------------------------------
     def _split(seq: Sequence[str]) -> List[List[str]]:
         return [list(seq[i::n]) for i in range(n)]
-    arab_parts, smart_parts = _split(arab_channels), _split(smart_channels or [])
-    pacing = 60 / max_req_per_min
+    parts_arab, parts_smart = _split(arab_channels), _split(smart_channels or [])
+    spacing = 60 / max_req_per_min
 
     # 2 ░ handlers ---------------------------------------------------------
-    async def _handle_arab(msg: Message):
-        if msg.date.timestamp() < START_TS or (_blocked(msg.text or "") and not msg.media):
+    async def _arab(msg: Message):
+        if msg.date.timestamp() < START_TS or (_clean(msg.text or "") in BLOCKLIST and not msg.media):
             return
-        txt = _clean_text(msg.text or "")
-        if _is_dup_text(txt):
+        txt = _clean(msg.text or "")
+        if _txt_dup(txt):
             return
-        await batch_push(MessageInfo(txt, _permalink(msg),
+        await batch_push(MessageInfo(txt, await _link(client, msg.chat_id, msg.id),
                                      getattr(msg.chat, "username", ""), await _media_sha(msg)))
 
     def _smart_factory(origin: TelegramClient):
         async def _smart(msg: Message):
             if not smart_chat_id or msg.out or msg.via_bot_id or msg.date.timestamp() < START_TS:
                 return
-            key = _dedup_key(msg)
-            if key in _RECENT_MEDIA:
+            k = _media_key(msg)
+            if k in _DUP_MEDIA:
                 return
-            _RECENT_MEDIA.append(key)
+            _DUP_MEDIA.append(k)
 
-            items = [i for i in await _collect_album(origin, msg) if i.media]
-            link = await _get_link(origin, msg.chat_id, msg.id)
+            # collect, drop phantom items
+            items = [i for i in await _album(origin, msg) if i.media]
+            link  = await _link(origin, msg.chat_id, msg.id)
             caption = f"{msg.text or ''}\n\n{link}".strip()
 
-            if not items:                     # text only
+            if not items:                                   # text only
                 await client.send_message(smart_chat_id, caption, link_preview=False)
                 return
-            if len(items) == 1:
-                await client.send_file(smart_chat_id, items[0], caption=caption, link_preview=False)
-            else:
-                await client.send_file(smart_chat_id, items,    caption=caption, link_preview=False)
+
+            try:                                            # attempt re-upload
+                if len(items) == 1:
+                    await client.send_file(smart_chat_id, items[0],
+                                           caption=caption, link_preview=False)
+                else:
+                    await client.send_file(smart_chat_id, items,
+                                           caption=caption, link_preview=False)
+            except errors.MediaEmptyError:                  # fallback: forward
+                await client.forward_messages(smart_chat_id, msg.id, msg.chat_id,
+                                              with_my_score=False)
+            except Exception as exc:
+                logger.warning("smart fwd failed id=%s: %s", msg.id, exc)
         return _smart
 
     _smap: Dict[TelegramClient, Callable[[Message], asyncio.Future]] = {}
 
-    # join helper ----------------------------------------------------------
-    async def _ensure_join(cli: TelegramClient, names: List[str]):
+    # helper join ----------------------------------------------------------
+    async def _join(cli: TelegramClient, names: List[str]):
         joined = {getattr(d.entity, "username", "").lower()
                   for d in await cli.get_dialogs() if getattr(d.entity, "username", None)}
         for n in names:
@@ -167,14 +178,13 @@ async def init_listeners(
                 continue
             try:
                 await cli(JoinChannelRequest(n))
-                logger.info("➕ %s joined @%s", cli.session.filename, n)
             except errors.FloodWaitError as e:
                 await asyncio.sleep(e.seconds)
 
     # backlog scanner ------------------------------------------------------
     async def _scanner(cli: TelegramClient, names: List[str]):
         last: Dict[int, int] = {}
-        for u in names:
+        for u in names:                         # initialise cursors
             m = await cli.get_messages(u, limit=1)
             if m:
                 last[await cli.get_peer_id(f"@{u}")] = m[0].id
@@ -187,28 +197,30 @@ async def init_listeners(
                         if m.date.timestamp() < START_TS:
                             continue
                         last[cid] = m.id
-                        await (_handle_arab(m) if u in arab_channels else _smap[cli](m))
+                        await (_arab(m) if u in arab_channels else _smap[cli](m))
                 except errors.FloodWaitError as e:
                     await asyncio.sleep(e.seconds)
-                await asyncio.sleep(pacing)
+                await asyncio.sleep(spacing)
+            await asyncio.sleep(round_gap)
 
     # 3 ░ wire clients -----------------------------------------------------
     for idx, (cli, _) in enumerate(pool):
-        my_arab, my_smart = arab_parts[idx], smart_parts[idx]
-        await _ensure_join(cli, my_arab + my_smart)
+        my_arab, my_smart = parts_arab[idx], parts_smart[idx]
+        await _join(cli, my_arab + my_smart)
 
         if my_arab:
-            cli.add_event_handler(_handle_arab,
-                events.NewMessage(chats=[await cli.get_peer_id(f"@{u}") for u in my_arab]))
+            cli.add_event_handler(_arab, events.NewMessage(
+                chats=[await cli.get_peer_id(f"@{u}") for u in my_arab]))
         if my_smart:
             h = _smart_factory(cli)
             _smap[cli] = h
-            cli.add_event_handler(h,
-                events.NewMessage(chats=[await cli.get_peer_id(f"@{u}") for u in my_smart]))
+            cli.add_event_handler(h, events.NewMessage(
+                chats=[await cli.get_peer_id(f"@{u}") for u in my_smart]))
         else:
             _smap[cli] = lambda _m: None
 
-        asyncio.create_task(_scanner(cli, my_arab + my_smart), name=f"scanner-{cli.session.filename}")
+        asyncio.create_task(_scanner(cli, my_arab + my_smart),
+                            name=f"scanner-{cli.session.filename}")
 
     logger.info("✅ listener ready – %d clients | %d arab chans | %d smart chans",
                 n, len(arab_channels), len(smart_channels or []))
