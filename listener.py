@@ -136,33 +136,37 @@ async def init_listeners(
                                      getattr(msg.chat, "username", ""), await _media_sha(msg)))
 
     def _smart_factory(origin: TelegramClient):
-        async def _smart(msg: Message):
-            if not smart_chat_id or msg.out or msg.via_bot_id or msg.date.timestamp() < START_TS:
+        async def _smart(ev: events.NewMessage.Event):
+            msg = ev.message
+            if (not smart_chat_id or msg.out or msg.via_bot_id
+                    or msg.date.timestamp() < START_TS):
                 return
+
             k = _media_key(msg)
             if k in _DUP_MEDIA:
                 return
             _DUP_MEDIA.append(k)
 
-            # collect, drop phantom items
-            items = [i for i in await _album(origin, msg) if i.media]
-            link  = await _link(origin, msg.chat_id, msg.id)
+            items = [m for m in await _album(origin, msg) if m.media]
+
+            link = await _link(origin, msg.chat_id, msg.id)
             caption = f"{msg.text or ''}\n\n{link}".strip()
 
-            if not items:                                   # text only
+            if not items:
                 await client.send_message(smart_chat_id, caption, link_preview=False)
                 return
 
-            try:                                            # attempt re-upload
-                if len(items) == 1:
+            try:
+                if len(items) == 1:                      # ➍ שולחים את ה-Message עצמו
                     await client.send_file(smart_chat_id, items[0],
-                                           caption=caption, link_preview=False)
+                                            caption=caption, link_preview=False)
                 else:
                     await client.send_file(smart_chat_id, items,
-                                           caption=caption, link_preview=False)
-            except errors.MediaEmptyError:                  # fallback: forward
+                                            caption=caption, link_preview=False)
+            except errors.MediaEmptyError:
+                # fallback – forward
                 await client.forward_messages(smart_chat_id, msg.id, msg.chat_id,
-                                              with_my_score=False)
+                                            with_my_score=False)
             except Exception as exc:
                 logger.warning("smart fwd failed id=%s: %s", msg.id, exc)
         return _smart
