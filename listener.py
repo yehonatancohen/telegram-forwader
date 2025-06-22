@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Listener – v2 hot-patch
------------------------
 
-* adds `media_id` to MessageInfo (fixes AttributeError in main.py)
-* _arab now also accepts str payloads that sometimes leak from Telegram
-  service/album updates and pushes them as text-only items instead of
-  logging WARNs.
-"""
 from __future__ import annotations
 # ────────────────────────── stdlib & telethon imports ─────────────────────────
 import asyncio, hashlib, json, logging, os, re, sys, time
@@ -119,7 +111,7 @@ async def init_listeners(
             if not isinstance(msg,Message): return
             if msg.out or msg.via_bot_id or msg.date.timestamp()<START_TS: return
             d=_dedup_key(msg);  (_RECENT_MEDIA.append(d) if d not in _RECENT_MEDIA else None)
-            if d in _RECENT_MEDIA[:-1]: return
+            if d in list(_RECENT_MEDIA)[:-1]: return
             album=[m for m in await _get_album(origin,msg) if m.media]
             caption=f"{msg.text or ''}\n\n{_permalink(msg)}".strip()
             try:
