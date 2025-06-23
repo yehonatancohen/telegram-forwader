@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 # arab_ai_bot.py
+# ============================================================================
+#  בוט טלגרם שקורא ערוצים ערביים, מסכם רגיל, ומאתר אירועים חריגים
+#  שולח סיכום באצ'ים כל X דקות + מאחד אירועים חריגים ל-5-10 דק'
+#  חוסך קריאות LLM בעזרת “תקציב” אסימונים לשעה (קבוע בקוד)
+# ============================================================================
+
 from __future__ import annotations
 
-# ─── stdlib & third-party imports ─────────────────────────────────────────────
+# ───── stdlib / third-party ────────────────────────────────────────────────
 import asyncio
 import logging
 import os
@@ -12,15 +18,15 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from hashlib import sha1
 from pathlib import Path
-from typing import Deque, List, Optional
+from typing import Deque, Dict, List, Optional, Set
 
 import httpx
 from dotenv import load_dotenv
 from telethon import TelegramClient
 
-from listener import MessageInfo, init_listeners   # קובץ ה-listener הקיים
+from listener import MessageInfo, init_listeners
 
-# ─── configuration & logging ─────────────────────────────────────────────
+# ───── basic config / logging ─────────────────────────────────────────────
 load_dotenv(Path("config_dev.env") if os.getenv("DEV") else Path("config.env"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -31,7 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("arab-ai-main")
 
-# ─── environment variables ───────────────────────────────────────────────
+# ───── env / constants (ללא ENV חדשים) ───────────────────────────────────
 API_ID  = int(os.getenv("TELEGRAM_API_ID", "0"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 PHONE    = os.getenv("PHONE_NUMBER")
@@ -43,10 +49,10 @@ SESSION_PATH = Path(SESSION).expanduser().resolve()
 ARABS_SUMMARY_OUT = int(os.getenv("ARABS_SUMMARY_OUT", "0"))
 SMART_CHAT        = int(os.getenv("SMART_CHAT", "0"))
 
-BATCH_SIZE            = int(os.getenv("BATCH_SIZE",            "24"))
-MAX_BATCH_AGE         = int(os.getenv("MAX_BATCH_AGE",         "300"))
-MEDIA_THRESHOLD       = int(os.getenv("MEDIA_THRESHOLD",       "3"))
-SUMMARY_MIN_INTERVAL  = int(os.getenv("SUMMARY_MIN_INTERVAL",  "300"))
+BATCH_SIZE           = int(os.getenv("BATCH_SIZE", "24"))
+MAX_BATCH_AGE        = int(os.getenv("MAX_BATCH_AGE", "300"))
+MEDIA_THRESHOLD      = int(os.getenv("MEDIA_THRESHOLD", "3"))
+SUMMARY_MIN_INTERVAL = int(os.getenv("SUMMARY_MIN_INTERVAL", "300"))
 
 SOURCES_FILE       = Path(os.getenv("ARAB_SOURCES_FILE",  "arab_channels.txt"))
 SMART_SOURCES_FILE = Path(os.getenv("SMART_SOURCES_FILE", "smart_channels.txt"))
@@ -61,17 +67,45 @@ if not (API_HASH and PHONE and ARABS_SUMMARY_OUT and CF_ACCOUNT and CF_TOKEN):
     logger.critical("Missing required env vars – aborting")
     sys.exit(1)
 
-# ─── urgent-event detection constants ────────────────────────────────────
+# ───── LLM budget – NO extra ENV (קבוע קשיח) ─────────────────────────────
+LLM_BUDGET_HOURLY = 120          # כמה קריאות LLM מותרות בשעה
+_calls_used       = 0
+_budget_reset_ts  = time.time()
+
+def _charge_llm(cost: int = 1) -> bool:
+    """ True-אם יש אסימונים פנויים, אחרת False """
+    global _calls_used, _budget_reset_ts
+    now = time.time()
+    if now - _budget_reset_ts >= 3600:            # reset every hour
+        _calls_used = 0
+        _budget_reset_ts = now
+    if _calls_used + cost > LLM_BUDGET_HOURLY:
+        return False
+    _calls_used += cost
+    return True
+
+# ───── אירועים חריגים – זיהוי ומיזוג ───────────────────────────────────────
 URGENT_KW = [
     "عاجل", "انفجار", "انفجارات", "اشتباك", "هجوم", "غارة",
-    "قتلى", "مقتل", "إصابة", "ازدحام", "قطع طرق", "أزمة سير",
+    "قتلى", "מقتل", "إصابة", "ازدحام", "قطع طرق", "أزمة سير",
     "احتجاج", "إغلاق", "زحمة", "طوارئ",
-    "حرائق", "حريق", "زخات صاروخية", "صاروخ", "درون"
+    "حرائق", "حريق", "صاروخ", "درون"
 ]
-EXCEPTION_CACHE: Deque[str] = deque(maxlen=500)    # למניעת כפילויות
-EXCEPTION_TTL    = 15 * 60                         # שניות (לא בשימוש כעת)
+EVENT_KEY_LEN = 120         # אורך טקסט לחישוב מפתח
+MERGE_WINDOW  = 600         # 10 דקות
+FLUSH_EVERY   = 120         # בדיקת flush כל 2 דקות
+MIN_SOURCES   = 2           # כמה ערוצים דרושים כדי “להצדיק” שליחה
 
-# ─── batching ----------------------------------------------------------------
+@dataclass
+class _AggEvent:
+    texts: List[str]
+    channels: Set[str]
+    first_ts: float
+
+_event_pool: Dict[str, _AggEvent] = {}
+EXCEPTION_CACHE: Deque[str] = deque(maxlen=500)    # מניעת כפילויות send
+
+# ───── batching עבור סיכומים רגילים ──────────────────────────────────────
 @dataclass
 class _BatchState:
     msgs: List[MessageInfo]
@@ -110,113 +144,95 @@ class BatchCollector:
 
 batcher = BatchCollector(BATCH_SIZE, MAX_BATCH_AGE)
 
-# ─── urgent-event helpers ────────────────────────────────────────────────
+# ───── urgent detection helpers ──────────────────────────────────────────
 def _looks_urgent(text: str) -> bool:
     low = text.lower()
     return any(k in low for k in URGENT_KW) or any(sym in text for sym in ("🚨", "🔴"))
 
-async def _is_exceptional(text: str) -> bool:
-    """
-    True אם מדובר באירוע חריג:
-    1. זיהוי מילת-עוגן → חוסך קריאה למודל
-    2. אחרת – LLM שמחזיר YES/NO
-    """
-    if _looks_urgent(text):
-        return True
-    try:
-        payload = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "ענה 'YES' או 'NO' בלבד. "
-                        "האם ההודעה הבאה מדווחת על אירוע חירום, אלימות, או שינוי דרמטי במרחב הציבורי?"
-                    ),
-                },
-                {"role": "user", "content": text[:700]},
-            ]
-        }
-        async with httpx.AsyncClient(timeout=8) as c:
-            r = await c.post(CF_URL, headers=HEADERS, json=payload)
-        r.raise_for_status()
-        return r.json()["result"]["response"].strip().upper().startswith("Y")
-    except Exception as exc:
-        logger.debug("classify fail: %s", exc)
-        return False
+def _event_key(text: str) -> str:
+    """מפתח להשוואה – מוריד ספרות ומרווחים, לוקח n תווים, sha1"""
+    cleaned = ''.join(ch for ch in text.lower() if not ch.isdigit())
+    snippet = cleaned[:EVENT_KEY_LEN]
+    return sha1(snippet.encode()).hexdigest()
 
-async def _send_authentic_report(msg: MessageInfo):
-    """
-    יוצר דיווח קצר ואותנטי בעברית, כולל תווית מקור, ושולח מיד.
-    """
-    h = sha1(msg.text.encode()).hexdigest()[:16]
+async def _add_event(info: MessageInfo):
+    """שומר אירוע בבריכה למיזוג"""
+    k = _event_key(info.text)
+    ev = _event_pool.get(k)
+    if ev:
+        ev.texts.append(info.text)
+        ev.channels.add(info.channel)
+    else:
+        _event_pool[k] = _AggEvent([info.text], {info.channel}, time.time())
+
+async def _aggregator_loop():
+    """ריצה ברקע – כל FLUSH_EVERY שניות שולחת אירועים מאוחדים"""
+    while True:
+        await asyncio.sleep(FLUSH_EVERY)
+        now = time.time()
+        for k, ev in list(_event_pool.items()):
+            if now - ev.first_ts < MERGE_WINDOW:
+                continue
+            if len(ev.channels) >= MIN_SOURCES:
+                await _send_aggregated_report(ev)
+            _event_pool.pop(k, None)
+
+# ───── LLM wrappers ──────────────────────────────────────────────────────
+async def _remote_llm(messages, timeout=20) -> str:
+    if not _charge_llm():
+        logger.warning("LLM budget exhausted – skipping call")
+        return ""
+    async with httpx.AsyncClient(timeout=timeout) as c:
+        r = await c.post(CF_URL, headers=HEADERS, json={"messages": messages})
+    r.raise_for_status()
+    return r.json()["result"]["response"].strip()
+
+async def _send_aggregated_report(ev: _AggEvent):
+    """יוצר דיווח מאוחד של אירוע"""
+    snippet = ev.texts[0][:1000]
+    srcs = ", ".join(f"@{c}" for c in sorted(ev.channels) if c)
+    prompt = [
+        {
+            "role": "system",
+            "content": (
+                "את/ה כתב/ת חדשות. צרפ/י כותרת מודגשת, סכם בקצרה בעברית "
+                f"והוסף שורה בסוף: (דווח ב-{len(ev.channels)} ערוצים: {srcs})"
+            ),
+        },
+        {"role": "user", "content": snippet},
+    ]
+    report = await _remote_llm(prompt)
+    if not report:
+        # fallback פשוט
+        report = (
+            f"**דיווח חריג**\n{snippet[:180]}...\n"
+            f"(דווח ב-{len(ev.channels)} ערוצים: {srcs})"
+        )
+    # מניעת כפילויות
+    h = sha1(report.encode()).hexdigest()[:16]
     if h in EXCEPTION_CACHE:
         return
     EXCEPTION_CACHE.append(h)
-
-    src = f"@{msg.channel}" if msg.channel else "מקור לא ידוע"
-    prompt = {
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "את/ה כתב/ת שטח. כתוב/כתבי דיווח חדשותי קצר בעברית "
-                    "בסגנון \"דיווח שלנו מבגדד:\" (אם אין מיקום בהודעה, אל תמציא). "
-                    "פתח/י בכותרת מודגשת ( **ככה** ). "
-                    f"סיים את הדיווח בתג מקור בסוגריים עגולות – (דיווח מערוץ {src}). "
-                    "אל תוסיף/י שום מידע מעבר לתוכן ולהערת המקור."
-                ),
-            },
-            {"role": "user", "content": msg.text[:1000]},
-        ]
-    }
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post(CF_URL, headers=HEADERS, json=prompt)
-        r.raise_for_status()
-        report = r.json()["result"]["response"].strip()
-
-        # ביטוח: אם המודל שכח להוסיף מקור – נוסיף ידנית
-        if f"@{msg.channel}" not in report and "דיווח מערוץ" not in report:
-            report = f"{report}\n(דיווח מערוץ {src})"
-
-        await client.send_message(
-            ARABS_SUMMARY_OUT,
-            report,
-            link_preview=False
-        )
-        logger.info("🚨 דיווח חריג נשלח (%s)", msg.link or "no-link")
+        await client.send_message(ARABS_SUMMARY_OUT, report, link_preview=False)
+        logger.info("🚨 merged event sent (%d ch)", len(ev.channels))
     except Exception as exc:
-        logger.error("auth report fail: %s", exc)
+        logger.error("send merged event fail: %s", exc)
 
-async def _maybe_handle_exception(info: MessageInfo) -> bool:
-    """
-    אם מזהה חריג – שולח דיווח ומחזיר True (כדי למנוע כניסה לבאצ' הרגיל).
-    """
-    if await _is_exceptional(info.text):
-        await _send_authentic_report(info)
-        return True
-    return False
-
-# ─── summariser helpers ─────────────────────────────────────────────────
+# ───── regular summary helpers ───────────────────────────────────────────
 async def _remote_summary(blob: str) -> str:
-    payload = {
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "את/ה כתב/ת חדשות אנרגטי/ת שמושך/ת את הקוראים.\n"
-                    "פתח/י בכותרת מודגשת ( **ככה** ) ולאחריה סיכום קצר בעברית.\n"
-                    "אל תכתוב/י שום דבר אחר, רק את הסיכום.\n"
-                    "השתדל/י לא לחרוג מ-5000 תווים.\n"
-                )
-            },
-            {"role": "user", "content": blob[:5000]},
-        ]
-    }
-    async with httpx.AsyncClient(timeout=20) as c:
-        r = await c.post(CF_URL, headers=HEADERS, json=payload)
-    r.raise_for_status()
-    return r.json()["result"]["response"].strip()
+    prompt = [
+        {
+            "role": "system",
+            "content": (
+                "את/ה כתב/ת חדשות אנרגטי/ת שמושך/ת את הקוראים.\n"
+                "פתח/י בכותרת מודגשת ( **ככה** ) ולאחריה סיכום קצר בעברית.\n"
+                "אל תכתוב/י שום דבר אחר.\n"
+            ),
+        },
+        {"role": "user", "content": blob[:5000]},
+    ]
+    return await _remote_llm(prompt)
 
 async def _send_summary_throttled(msgs: List[MessageInfo]):
     global _last_summary_ts
@@ -230,19 +246,16 @@ async def _send_summary_throttled(msgs: List[MessageInfo]):
 
 async def _really_send_summary(msgs: List[MessageInfo]):
     blob = "\n".join(m.text for m in msgs)[:2500]
-    try:
-        summ = await _remote_summary(blob)
-    except Exception as exc:
-        logger.error("summariser fail: %s", exc)
+    summ = await _remote_summary(blob)
+    if not summ:
+        logger.debug("skip empty summary")
         return
-
     try:
         await client.send_message(ARABS_SUMMARY_OUT, summ, link_preview=False)
         logger.info("📝 summary sent (%d chars / %d msgs)",
                     len(summ), len(msgs))
     except Exception as exc:
         logger.error("summary send error: %s", exc)
-        return
 
     links = [m.link for m in msgs if m.link]
     if links:
@@ -257,21 +270,22 @@ async def _really_send_summary(msgs: List[MessageInfo]):
                     f"📷 פריט מדיה הופץ ב-{ct} ערוצים.",
                     file=mid, link_preview=False  # type: ignore[arg-type]
                 )
-                logger.debug("forwarded media %s (x%d)", mid, ct)
             except Exception as exc:
                 logger.error("media send err: %s", exc)
 
-# ─── utils ───────────────────────────────────────────────────────────────
+# ───── utils ─────────────────────────────────────────────────────────────
 def _load_usernames(path: Path) -> List[str]:
     if not path.is_file():
         logger.warning("channels file missing: %s", path)
         return []
-    names = sorted({l.strip().lstrip("@").lower()
-                    for l in path.read_text().splitlines() if l.strip()})
+    names = sorted({
+        l.strip().lstrip("@").lower()
+        for l in path.read_text().splitlines() if l.strip()
+    })
     logger.info("loaded %d channels from %s", len(names), path)
     return names
 
-# ─── telegram client & main ──────────────────────────────────────────────
+# ───── telegram client & main ────────────────────────────────────────────
 client = TelegramClient(
     str(SESSION_PATH),
     API_ID,
@@ -281,26 +295,28 @@ client = TelegramClient(
     timeout=10,
 )
 
+async def _maybe_handle_exception(info: MessageInfo) -> bool:
+    """מזהה אירוע חריג → שומר ב-pool ומונע כניסה לבאצ' הרגיל."""
+    if _looks_urgent(info.text):
+        await _add_event(info)
+        return True
+    return False
+
 async def main():
     logger.info("Starting Telegram client with session: %s", SESSION_PATH)
     if not SESSION_PATH.is_file():
-        logger.critical("Session file %s does not exist – aborting",
-                        SESSION_PATH)
+        logger.critical("Session file %s does not exist – aborting", SESSION_PATH)
         sys.exit(1)
 
     await client.start(phone=lambda: PHONE)
     if not await client.is_user_authorized():
-        logger.critical(
-            "🛑  Telethon entered interactive login — "
-            "the .session file is missing or unwritable."
-        )
+        logger.critical("🛑 interactive login needed – aborting")
         sys.exit(1)
-    logger.info("✅  client authorised as %s", PHONE)
+    logger.info("✅ client authorised as %s", PHONE)
 
     arab_channels  = _load_usernames(SOURCES_FILE)
     smart_channels = _load_usernames(SMART_SOURCES_FILE)
 
-    # עטיפת batch_push כדי לשלב זיהוי-חריג
     async def _batch_or_exception(info: MessageInfo):
         if not await _maybe_handle_exception(info):
             await batcher.push(info)
@@ -312,6 +328,9 @@ async def main():
         batch_push=_batch_or_exception,
         smart_chat_id=SMART_CHAT or None,
     )
+
+    # הפעל לולאת איחוד אירועים ברקע
+    asyncio.create_task(_aggregator_loop(), name="event-aggregator")
 
     logger.info(
         "🚀 bot online – arab=%d smart=%d batch=%d age≤%ds summary_gap=%ds",
