@@ -44,7 +44,7 @@ def _credit_footer(sources: str, links: list[str]) -> str:
     for link in links[:3]:
         if link:
             lines.append(f"🔗 {link}")
-    lines.append(f"📢 מקור: {BOT_GROUP_LINK}")
+    lines.append(f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}")
     return "\n".join(lines)
 
 
@@ -134,7 +134,7 @@ class Sender:
             "━━━━━━━━━━━━━━━━━━━━",
             summary,
             "━━━━━━━━━━━━━━━━━━━━",
-            f"📢 מקור: {BOT_GROUP_LINK}",
+            f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}",
         ]
         report = "\n".join(lines)
         try:

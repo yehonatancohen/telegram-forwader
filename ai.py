@@ -76,28 +76,41 @@ class AIClient:
         self._calls_used += 1
         return True
 
-    async def _call(self, prompt: str, timeout: int = 20) -> str:
+    async def _call(self, prompt: str, timeout: int = 20, retries: int = 3) -> str:
         if not self._charge():
             logger.warning("AI budget exhausted, skipping call")
             return ""
         async with self._sem:
-            try:
-                logger.debug("[ai] calling Gemini (prompt len=%d)...", len(prompt))
-                async with httpx.AsyncClient(timeout=timeout) as c:
-                    r = await c.post(
-                        f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-                        json={
-                            "contents": [{"parts": [{"text": prompt}]}],
-                            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 512},
-                        },
-                    )
-                r.raise_for_status()
-                result = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                logger.info("[ai] Gemini response OK (len=%d)", len(result))
-                return result
-            except Exception as exc:
-                logger.error("[ai] Gemini call failed: %s", exc)
-                return ""
+            for attempt in range(retries + 1):
+                try:
+                    logger.debug("[ai] calling Gemini (prompt len=%d, attempt=%d)...",
+                                 len(prompt), attempt + 1)
+                    async with httpx.AsyncClient(timeout=timeout) as c:
+                        r = await c.post(
+                            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                            json={
+                                "contents": [{"parts": [{"text": prompt}]}],
+                                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 512},
+                            },
+                        )
+                    if r.status_code == 429 and attempt < retries:
+                        wait = 5 * (3 ** attempt)  # 5s, 15s, 45s
+                        logger.warning("[ai] rate limited (429), retrying in %ds...", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    r.raise_for_status()
+                    result = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    logger.info("[ai] Gemini response OK (len=%d)", len(result))
+                    return result
+                except Exception as exc:
+                    if attempt < retries and "429" in str(exc):
+                        wait = 5 * (3 ** attempt)
+                        logger.warning("[ai] rate limited, retrying in %ds...", wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.error("[ai] Gemini call failed: %s", exc)
+                    return ""
+            return ""
 
     # ─── Signature extraction ─────────────────────────────────────────────
     async def extract_signature(self, text: str) -> EventSignature | None:

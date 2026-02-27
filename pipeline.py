@@ -10,6 +10,7 @@ from hashlib import sha1
 from typing import Deque, List, Optional
 
 from ai import AIClient
+from translate import translate_to_hebrew
 from authority import AuthorityTracker
 from config import (
     AUTHORITY_HIGH_THRESHOLD,
@@ -129,7 +130,7 @@ class Pipeline:
         asyncio.create_task(self._send_summary(msgs))
 
     async def _send_summary(self, msgs: List[MessageInfo]):
-        """Forward batch messages as a combined summary (no AI call)."""
+        """Forward batch messages as a combined summary (translated to Hebrew)."""
         try:
             async with self._summary_lock:
                 wait = SUMMARY_MIN_INTERVAL - (time.time() - self._last_summary_ts)
@@ -137,11 +138,12 @@ class Pipeline:
                     await asyncio.sleep(wait)
                 self._last_summary_ts = time.time()
 
-            # Combine raw texts into a readable summary
+            # Combine raw texts, translate each to Hebrew
             parts = []
             for m in msgs[:20]:
                 src = f"@{m.channel}" if m.channel else "לא ידוע"
-                parts.append(f"▪ {src}: {m.text[:200]}")
+                translated = await translate_to_hebrew(m.text[:300])
+                parts.append(f"▪ {src}: {translated}")
 
             summary = "\n".join(parts)
             await self.sender.send_batch_summary(summary)
@@ -181,19 +183,19 @@ class Pipeline:
                 self.pool.expire(eid)
 
     async def _dispatch_trend(self, ev):
-        """Send a trend report using raw text (no AI summary)."""
-        # Use the first (longest) text as the report body
+        """Send a trend report with translated text."""
         text = max(ev.texts, key=len) if ev.texts else ""
         n = len(ev.channels)
-        summary = text[:500]
+        summary = await translate_to_hebrew(text[:500])
         if not summary:
             summary = f"דיווחים חוזרים ({n} ערוצים) על אירוע חריג."
         logger.info("[pipeline] dispatching trend report (%d sources)", n)
         await self.sender.send_trend_report(ev, summary)
 
     async def _dispatch_single(self, ev):
-        """Send a single high-authority source alert using raw text (no AI summary)."""
-        summary = ev.texts[0][:500] if ev.texts else ""
+        """Send a single high-authority source alert with translated text."""
+        text = ev.texts[0][:500] if ev.texts else ""
+        summary = await translate_to_hebrew(text)
         ch = next(iter(ev.channels))
         logger.info("[pipeline] dispatching single-source alert (@%s)", ch)
         await self.sender.send_single_source_alert(ev, summary)
