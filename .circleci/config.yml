@@ -21,16 +21,19 @@ jobs:
       - setup_remote_docker:
           docker_layer_caching: true
       - run:
-          name: Build Docker image
+          name: Set up Docker Buildx
           command: |
-            docker build -t $DOCKERHUB_USERNAME/telegram-intel:latest \
-                         -t $DOCKERHUB_USERNAME/telegram-intel:$CIRCLE_SHA1 .
+            docker buildx create --use --name multiarch
+            docker buildx inspect --bootstrap
       - run:
-          name: Push to Docker Hub
+          name: Build and push multi-arch image
           command: |
             echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-            docker push $DOCKERHUB_USERNAME/telegram-intel:latest
-            docker push $DOCKERHUB_USERNAME/telegram-intel:$CIRCLE_SHA1
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -t $DOCKERHUB_USERNAME/telegram-reporter:latest \
+              -t $DOCKERHUB_USERNAME/telegram-reporter:$CIRCLE_SHA1 \
+              --push .
 
 workflows:
   build-test-deploy:

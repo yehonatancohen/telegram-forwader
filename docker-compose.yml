@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   telegram-intel:
-    image: ${DOCKERHUB_USERNAME}/telegram-intel:latest
+    image: yehonatancohen/telegram-reporter:latest
     container_name: telegram-intel
     restart: unless-stopped
     env_file:
