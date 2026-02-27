@@ -39,9 +39,16 @@ SMART_CHAT        = int(os.getenv("SMART_CHAT", "0"))
 # Reader accounts — each entry can have a "session_string" key for StringSession
 TG_READERS_JSON = json.loads(os.getenv("TG_READERS_JSON", "[]"))
 
+# ───── Database ──────────────────────────────────────────────────────────
+DB_PATH = Path(os.getenv("DB_PATH", "data/intel.db"))
+
 # ───── Channel sources ───────────────────────────────────────────────────
-ARAB_SOURCES_FILE  = Path(os.getenv("ARAB_SOURCES_FILE", "arab_channels.txt"))
-SMART_SOURCES_FILE = Path(os.getenv("SMART_SOURCES_FILE", "smart_channels.txt"))
+# Stored on the persistent data volume so the bot can add/remove channels.
+# On first run, copies from the original bind-mounted files if they exist.
+_ARAB_SEED = Path(os.getenv("ARAB_SOURCES_FILE", "arab_channels.txt"))
+_SMART_SEED = Path(os.getenv("SMART_SOURCES_FILE", "smart_channels.txt"))
+ARAB_SOURCES_FILE  = DB_PATH.parent / "arab_channels.txt"
+SMART_SOURCES_FILE = DB_PATH.parent / "smart_channels.txt"
 
 # ───── Batching ──────────────────────────────────────────────────────────
 BATCH_SIZE           = int(os.getenv("BATCH_SIZE", "24"))
@@ -70,8 +77,6 @@ AUTHORITY_HIGH_THRESHOLD  = float(os.getenv("AUTHORITY_HIGH_THRESHOLD", "75"))
 AUTHORITY_SMART_DEFAULT   = float(os.getenv("AUTHORITY_SMART_DEFAULT", "70"))
 AUTHORITY_ARAB_DEFAULT    = float(os.getenv("AUTHORITY_ARAB_DEFAULT", "50"))
 
-# ───── Database ──────────────────────────────────────────────────────────
-DB_PATH = Path(os.getenv("DB_PATH", "data/intel.db"))
 
 # ───── Validation ────────────────────────────────────────────────────────
 def validate():

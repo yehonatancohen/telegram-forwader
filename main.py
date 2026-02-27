@@ -36,6 +36,23 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
+def _migrate_channel_files():
+    """Copy seed channel files to data volume on first run."""
+    import shutil
+    for seed, dest in [
+        (config._ARAB_SEED, config.ARAB_SOURCES_FILE),
+        (config._SMART_SEED, config.SMART_SOURCES_FILE),
+    ]:
+        if not dest.is_file() and seed.is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(seed, dest)
+            logger.info("migrated %s → %s", seed, dest)
+        elif not dest.is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text("")
+            logger.warning("no seed file %s found, created empty %s", seed, dest)
+
+
 def _load_usernames(path: Path) -> list[str]:
     if not path.is_file():
         logger.warning("channels file missing: %s", path)
@@ -74,6 +91,9 @@ async def _recovery_mode(mgr: SessionManager):
 
 
 async def main():
+    # ─── Migrate channel files to data volume on first run ────────────
+    _migrate_channel_files()
+
     # ─── Companion bot (always starts first) ──────────────────────────
     mgr = await _start_companion_bot()
 

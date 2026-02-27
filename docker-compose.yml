@@ -7,8 +7,8 @@ services:
       - config.env
     volumes:
       - intel-data:/usr/src/app/data
-      - ./arab_channels.txt:/usr/src/app/arab_channels.txt
-      - ./smart_channels.txt:/usr/src/app/smart_channels.txt
+      - ./arab_channels.txt:/usr/src/app/arab_channels.txt:ro
+      - ./smart_channels.txt:/usr/src/app/smart_channels.txt:ro
     logging:
       driver: json-file
       options:

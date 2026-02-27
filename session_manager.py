@@ -130,7 +130,7 @@ class SessionManager:
     # ─── Handler registration ────────────────────────────────────────────
     def _register_handlers(self):
 
-        @self.bot.on(events.NewMessage(pattern="/start"))
+        @self.bot.on(events.NewMessage(pattern=r"/(start|help)"))
         async def start_handler(event):
             if not self._is_admin(event.sender_id):
                 await event.respond("⛔ Unauthorized.")
