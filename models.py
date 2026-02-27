@@ -26,6 +26,7 @@ class EventSignature:
     entities: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
     is_urgent: bool = False
+    credibility_indicators: Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -35,6 +36,7 @@ class EventSignature:
             "entities": self.entities,
             "keywords": self.keywords,
             "is_urgent": self.is_urgent,
+            "credibility_indicators": self.credibility_indicators,
         }
 
     @classmethod
@@ -46,6 +48,7 @@ class EventSignature:
             entities=d.get("entities") or [],
             keywords=d.get("keywords") or [],
             is_urgent=d.get("is_urgent", False),
+            credibility_indicators=d.get("credibility_indicators") or {},
         )
 
 

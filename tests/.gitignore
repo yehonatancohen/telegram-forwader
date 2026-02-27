@@ -1,0 +1,2 @@
+# Ignore everything in tests except the test files
+__pycache__/

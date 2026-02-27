@@ -35,7 +35,36 @@ async def generate(api_id: int, api_hash: str, phone: str, label: str):
     print(f"  Session for: {label} ({phone})")
     print(f"{'='*60}")
     print(f"\n{session_str}\n")
-    print(f"Add this to your config.env or Docker environment.")
+
+    # Offer to auto-write to config.env
+    config_path = Path("config.env")
+    if config_path.is_file():
+        answer = input("Write session string to config.env? [y/N] ").strip().lower()
+        if answer == "y":
+            content = config_path.read_text()
+            if "TG_SESSION_STRING=" in content:
+                import re
+                content = re.sub(
+                    r"^TG_SESSION_STRING=.*$",
+                    f"TG_SESSION_STRING={session_str}",
+                    content,
+                    flags=re.MULTILINE,
+                )
+            else:
+                content += f"\nTG_SESSION_STRING={session_str}\n"
+            config_path.write_text(content)
+            print(f"✓ Written to {config_path}")
+        else:
+            print("Skipped. Add manually to config.env:")
+            print(f"  TG_SESSION_STRING={session_str}")
+    else:
+        print("Add this to your config.env:")
+        print(f"  TG_SESSION_STRING={session_str}")
+
+    print(f"\n{'='*60}")
+    print("  Next steps:")
+    print("  1. Add TG_SESSION_STRING to ~/telegram-intel/config.env on your VM")
+    print("  2. Push code to main → CircleCI builds → Watchtower deploys")
     print(f"{'='*60}\n")
     return session_str
 

@@ -1,0 +1,44 @@
+version: 2.1
+
+jobs:
+  test:
+    docker:
+      - image: cimg/python:3.12
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: pip install -r requirements.txt pytest
+      - run:
+          name: Run tests
+          command: python -m pytest tests/ -v
+
+  build-and-push:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t $DOCKERHUB_USERNAME/telegram-intel:latest \
+                         -t $DOCKERHUB_USERNAME/telegram-intel:$CIRCLE_SHA1 .
+      - run:
+          name: Push to Docker Hub
+          command: |
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            docker push $DOCKERHUB_USERNAME/telegram-intel:latest
+            docker push $DOCKERHUB_USERNAME/telegram-intel:$CIRCLE_SHA1
+
+workflows:
+  build-test-deploy:
+    jobs:
+      - test
+      - build-and-push:
+          requires:
+            - test
+          filters:
+            branches:
+              only: main

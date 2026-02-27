@@ -16,6 +16,8 @@ logger = logging.getLogger("ai")
 
 EXTRACT_PROMPT = """\
 Extract the key intelligence elements from the following message.
+The message may be in Arabic, Hebrew, or English — handle all three.
+Normalize location names to their most common English or Arabic form.
 Return ONLY valid JSON (no markdown fences, no extra text):
 {
   "location": "specific place name or null",
@@ -23,7 +25,13 @@ Return ONLY valid JSON (no markdown fences, no extra text):
   "event_type": "one of: strike, rocket, clash, arrest, movement, statement, casualty, other, irrelevant",
   "entities": ["named groups, people, or armed forces mentioned"],
   "keywords": ["2-3 key descriptive terms"],
-  "is_urgent": true or false
+  "is_urgent": true or false,
+  "credibility_indicators": {
+    "has_media_reference": true or false,
+    "cites_named_source": true or false,
+    "uses_vague_language": true or false,
+    "is_forwarded_claim": true or false
+  }
 }
 If the message is not about a security/military/political event, return: {"event_type":"irrelevant"}
 
@@ -33,6 +41,7 @@ Message:
 SUMMARY_PROMPT = """\
 סכם בקצרה בעברית את הנקודות העיקריות מההודעות הבאות.
 כתוב 2-3 שורות תמציתיות, בלי סגנון כתב חדשות.
+אם מספר מקורות מדווחים על אותו אירוע, ציין זאת.
 {authority_context}
 
 ההודעות:

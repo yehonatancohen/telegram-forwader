@@ -18,6 +18,24 @@ logger = logging.getLogger("sender")
 SENT_CACHE: Deque[str] = deque(maxlen=800)
 
 
+def _reliability_badge(score: float) -> str:
+    """Return emoji badge based on authority score."""
+    if score >= 75:
+        return "🟢"
+    if score >= 55:
+        return "🟡"
+    return "🔴"
+
+
+def _source_badge(n_sources: int) -> str:
+    """Return badge based on number of corroborating sources."""
+    if n_sources >= 3:
+        return "✅ מאומת"
+    if n_sources == 2:
+        return "🔄 חוזר"
+    return "⚠️ מקור בודד"
+
+
 class Sender:
     def __init__(self, client: TelegramClient, authority: AuthorityTracker,
                  arabs_chat: int, smart_chat: int):
@@ -29,25 +47,35 @@ class Sender:
     async def send_trend_report(self, event: AggEvent, summary_text: str):
         """Send a multi-source trend report to the arab output channel."""
         srcs = ", ".join(f"@{c}" for c in sorted(event.channels) if c)
-        link = event.links[0] if event.links else "ללא-קישור"
+        link = event.links[0] if event.links else ""
         n = len(event.channels)
 
         # Authority context
         scores = [self.authority.get_score(c) for c in event.channels]
         avg_score = sum(scores) / len(scores) if scores else 50
+        badge = _reliability_badge(avg_score)
         label = self.authority.get_label(avg_score)
+        src_badge = _source_badge(n)
 
         # Cross-source detection
         types = set(event.channel_types.values())
         cross_note = ""
         if "arab" in types and "smart" in types:
-            cross_note = " | אושש גם ע\"י מקורות ישראליים"
+            cross_note = "\n🔗 אושש גם ע\"י מקורות ישראליים"
 
-        report = (
-            f"{summary_text}\n"
-            f"(מקור: {link} | דווח ב-{n} ערוצים: {srcs} | "
-            f"אמינות: {label}{cross_note})"
-        )
+        lines = [
+            f"{badge} {src_badge} | אמינות: {label}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            summary_text,
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📡 {n} ערוצים: {srcs}",
+        ]
+        if link:
+            lines.append(f"🔗 {link}")
+        if cross_note:
+            lines.append(cross_note)
+
+        report = "\n".join(lines)
 
         h = sha1(report.encode()).hexdigest()[:16]
         if h in SENT_CACHE:
@@ -67,15 +95,21 @@ class Sender:
         """Send a high-authority single-source alert."""
         ch = next(iter(event.channels))
         score = self.authority.get_score(ch)
+        badge = _reliability_badge(score)
         label = self.authority.get_label(score)
         link = event.links[0] if event.links else ""
 
-        report = (
-            f"{summary_text}\n"
-            f"[מקור בודד באמינות {label}: @{ch}]"
-        )
+        lines = [
+            f"{badge} ⚠️ מקור בודד | אמינות: {label}",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            summary_text,
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"📡 @{ch}",
+        ]
         if link:
-            report += f"\n{link}"
+            lines.append(f"🔗 {link}")
+
+        report = "\n".join(lines)
 
         h = sha1(report.encode()).hexdigest()[:16]
         if h in SENT_CACHE:
@@ -93,8 +127,9 @@ class Sender:
         """Send a periodic batch summary."""
         if not summary:
             return
+        report = f"📋 סיכום תקופתי\n━━━━━━━━━━━━━━━━━━━━\n{summary}"
         try:
-            await self.client.send_message(self.arabs_chat, summary,
+            await self.client.send_message(self.arabs_chat, report,
                                            link_preview=False)
             logger.info("batch summary sent")
         except Exception as exc:

@@ -2,11 +2,14 @@
 """
 Telegram intel monitor — slim entry point.
 Wires: listener → pipeline → correlation → authority → sender
+
+If the userbot session is invalid, falls back to companion bot mode
+so the admin can renew the session via Telegram chat.
 """
 
 from __future__ import annotations
 
-import asyncio, logging, sys
+import asyncio, logging, signal, sys
 from pathlib import Path
 
 from telethon import TelegramClient
@@ -20,6 +23,7 @@ from db import Database
 from listener import init_listeners
 from pipeline import Pipeline
 from sender import Sender
+from session_manager import SessionManager, get_session_string
 
 config.validate()
 
@@ -30,14 +34,6 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger("main")
-
-# Use StringSession if available, otherwise fall back to file-based session
-_session = (StringSession(config.SESSION_STRING) if config.SESSION_STRING
-            else str(config.SESSION_PATH))
-client = TelegramClient(
-    _session, config.API_ID, config.API_HASH,
-    connection_retries=-1, retry_delay=5, timeout=10,
-)
 
 
 def _load_usernames(path: Path) -> list[str]:
@@ -51,17 +47,67 @@ def _load_usernames(path: Path) -> list[str]:
     })
 
 
+async def _start_companion_bot() -> SessionManager | None:
+    """Start the companion bot if BOT_TOKEN + ADMIN_ID are configured."""
+    if not config.BOT_TOKEN or not config.ADMIN_ID:
+        return None
+    try:
+        mgr = SessionManager()
+        await mgr.start()
+        return mgr
+    except Exception:
+        logger.exception("companion bot failed to start")
+        return None
+
+
+async def _recovery_mode(mgr: SessionManager):
+    """Session is dead — keep companion bot alive so admin can /login."""
+    logger.warning("entering recovery mode — waiting for session renewal via companion bot")
+    mgr.set_userbot_status(False)
+    await mgr.notify_session_expired()
+    # Block forever — the companion bot's /login handler will os._exit(0)
+    # when a new session is saved, and Docker restarts us.
+    await asyncio.Event().wait()
+
+
 async def main():
-    if not config.SESSION_STRING and not config.SESSION_PATH.is_file():
+    # ─── Companion bot (always starts first) ──────────────────────────
+    mgr = await _start_companion_bot()
+
+    # ─── Resolve session string ───────────────────────────────────────
+    session_str = get_session_string()  # checks override file first
+
+    if not session_str and not config.SESSION_PATH.is_file():
         logger.critical("no session — set TG_SESSION_STRING or provide %s file",
                         config.SESSION_PATH)
+        if mgr:
+            await _recovery_mode(mgr)
         sys.exit(1)
 
-    await client.start(phone=lambda: config.PHONE)
-    if not await client.is_user_authorized():
-        logger.critical("interactive login needed")
+    _session = StringSession(session_str) if session_str else str(config.SESSION_PATH)
+    client = TelegramClient(
+        _session, config.API_ID, config.API_HASH,
+        connection_retries=-1, retry_delay=5, timeout=10,
+    )
+
+    # ─── Userbot login ────────────────────────────────────────────────
+    try:
+        await client.start(phone=lambda: config.PHONE)
+    except Exception:
+        logger.exception("userbot connection failed")
+        if mgr:
+            await _recovery_mode(mgr)
         sys.exit(1)
-    logger.info("authorised")
+
+    if not await client.is_user_authorized():
+        logger.critical("userbot session expired / not authorized")
+        await client.disconnect()
+        if mgr:
+            await _recovery_mode(mgr)
+        sys.exit(1)
+
+    if mgr:
+        mgr.set_userbot_status(True)
 
     # ─── Init components ──────────────────────────────────────────────
     db = Database(config.DB_PATH)
@@ -94,7 +140,35 @@ async def main():
     asyncio.create_task(pipeline.aggregator_loop(), name="aggregator")
     asyncio.create_task(pipeline.decay_loop(), name="decay")
 
-    logger.info("bot online – %d arab | %d smart", len(arab), len(smart))
+    # ─── Graceful shutdown ────────────────────────────────────────────
+    async def _shutdown():
+        logger.info("shutting down gracefully...")
+        if mgr:
+            await mgr.stop()
+        await db.close()
+        await client.disconnect()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(_shutdown()))
+        except NotImplementedError:
+            pass
+
+    # ─── Startup banner ───────────────────────────────────────────────
+    session_type = "override file" if get_session_string() != config.SESSION_STRING \
+        else ("StringSession" if session_str else f"file ({config.SESSION_PATH})")
+    me = await client.get_me()
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    logger.info("  Telegram Intel Monitor — ONLINE")
+    logger.info("  Account : %s (id=%d)", me.first_name, me.id)
+    logger.info("  Session : %s", session_type)
+    logger.info("  Channels: %d arab | %d smart", len(arab), len(smart))
+    logger.info("  Output  : %s", config.ARABS_SUMMARY_OUT)
+    logger.info("  AI model: %s", config.GEMINI_MODEL)
+    logger.info("  Helper  : %s", "companion bot active" if mgr else "no companion bot")
+    logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
     await client.run_until_disconnected()
 
 

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import logging, time
+import logging, re, time, unicodedata
 from hashlib import sha1
 from typing import Dict
 from uuid import uuid4
@@ -18,11 +18,18 @@ from models import AggEvent, EventSignature, MessageInfo
 
 logger = logging.getLogger("correlation")
 
-# ───── Urgent keywords (kept from original) ──────────────────────────────
+# Arabic tashkeel (diacritics) range
+_ARABIC_DIACRITICS = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670]")
+
+# ───── Urgent keywords (Arabic + Hebrew) ─────────────────────────────────
 URGENT_KW = [
+    # Arabic
     "عاجل", "انفجار", "انفجارات", "اشتباك", "هجوم", "غارة",
     "قتلى", "مقتل", "إصابة", "ازدحام", "قطع طرق", "أزمة سير",
     "احتجاج", "إغلاق", "زحمة", "طوارئ", "حرائق", "حريق", "صاروخ", "درون",
+    # Hebrew
+    "דחוף", "פיגוע", "ירי", "רקטה", "רקטות", "חיסול", "פיצוץ",
+    "אירוע ביטחוני", "חדירה", "עימות", "הרוגים", "פצועים", "התקפה",
 ]
 
 
@@ -33,6 +40,8 @@ def looks_urgent(text: str) -> bool:
 
 # ───── Cheap SHA1 key (fallback / pre-filter) ────────────────────────────
 def sha1_event_key(text: str) -> str:
+    text = unicodedata.normalize("NFC", text)
+    text = _ARABIC_DIACRITICS.sub("", text)    # strip tashkeel
     cleaned = "".join(ch for ch in text.lower() if not ch.isdigit())
     return sha1(cleaned[:120].encode()).hexdigest()
 

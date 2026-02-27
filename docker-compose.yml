@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  telegram-intel:
+    image: ${DOCKERHUB_USERNAME}/telegram-intel:latest
+    container_name: telegram-intel
+    restart: unless-stopped
+    env_file:
+      - config.env
+    volumes:
+      - intel-data:/usr/src/app/data
+      - ./arab_channels.txt:/usr/src/app/arab_channels.txt:ro
+      - ./smart_channels.txt:/usr/src/app/smart_channels.txt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_LABEL_ENABLE=false
+    command: telegram-intel
+
+volumes:
+  intel-data:

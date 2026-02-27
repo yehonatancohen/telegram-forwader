@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import asyncio, hashlib, json, logging, os, re, sys, time
+import asyncio, hashlib, json, logging, os, re, sys, time, unicodedata
 from collections import deque
 from typing import Awaitable, Callable, Deque, Dict, List, Sequence, Tuple
 
@@ -20,7 +20,16 @@ logging.basicConfig(format="%(asctime)s %(levelname)s | %(message)s",
 logger = logging.getLogger("listener")
 
 URL_RE    = re.compile(r"(https?://)?(t\.me|telegram\.me)/(joinchat/|[\w\d_-]+)")
-BLOCKLIST = {"צבע אדום", "גרם", "היכנסו למרחב המוגן", "חדירת כלי טיס עוין"}
+# Arabic tashkeel (diacritics) range: U+0610-U+061A, U+064B-U+065F, U+0670
+_ARABIC_DIACRITICS = re.compile(r"[\u0610-\u061A\u064B-\u065F\u0670]")
+BLOCKLIST = {
+    # Hebrew alert phrases
+    "צבע אדום", "גרם", "היכנסו למרחב המוגן", "חדירת כלי טיס עוין",
+    # Common Arabic spam / non-intel
+    "قناتنا الرسمية", "تابعونا على", "رابط الانضمام", "انضموا الينا",
+    "للإعلان والتواصل", "مشاركة الرابط",
+}
+
 
 _DUP_CACHE: Deque[str] = deque(maxlen=500)
 _RECENT_MEDIA: Deque[str] = deque(maxlen=2_000)
@@ -29,6 +38,8 @@ START_TS = time.time()
 
 # ───── Helper utilities ──────────────────────────────────────────────────
 def _clean_text(t: str) -> str:
+    t = unicodedata.normalize("NFC", t)
+    t = _ARABIC_DIACRITICS.sub("", t)          # strip tashkeel
     return re.sub(r"\s+", " ", URL_RE.sub("", t)).strip()
 
 def _is_blocked(t: str) -> bool:

@@ -1,14 +1,27 @@
-*.txt
+# ─── Python ──────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ─── Secrets & sessions ─────────────────────
 *.env
+!config.env_example
 *.session
 *.session-journal
+*.session.enc
 *.key
-*.pyc
-session_enc.py
-clean_data.py
-test.py
-encrypt.py
-/arabtest
-!requirements.txt
-!arab_channels.txt
-!smart_channels.txt
+
+# ─── Data ────────────────────────────────────
+data/
+downloads/
+
+# ─── IDE ─────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS ──────────────────────────────────────
+.DS_Store
+Thumbs.db

@@ -49,8 +49,12 @@ class Pipeline:
         self._last_summary_ts = 0.0
         self._dup_cache: Deque[str] = deque(maxlen=500)
 
+        # Stats
+        self._stats = {"messages": 0, "events": 0, "summaries": 0, "errors": 0}
+
     async def process(self, info: MessageInfo):
         """Main entry point — every message (arab or smart) flows through here."""
+        self._stats["messages"] += 1
         # Quick in-memory dedup
         h = sha1(info.text.encode()).hexdigest()
         if h in self._dup_cache:
@@ -111,26 +115,31 @@ class Pipeline:
         asyncio.create_task(self._send_summary(msgs))
 
     async def _send_summary(self, msgs: List[MessageInfo]):
-        async with self._summary_lock:
-            wait = SUMMARY_MIN_INTERVAL - (time.time() - self._last_summary_ts)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_summary_ts = time.time()
+        try:
+            async with self._summary_lock:
+                wait = SUMMARY_MIN_INTERVAL - (time.time() - self._last_summary_ts)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self._last_summary_ts = time.time()
 
-        # Build authority context
-        channels = {m.channel for m in msgs if m.channel}
-        if channels:
-            scores = {c: self.authority.get_score(c) for c in channels}
-            top = sorted(scores.items(), key=lambda x: -x[1])[:3]
-            ctx_parts = [f"@{c} (אמינות: {self.authority.get_label(s)})"
-                         for c, s in top]
-            authority_ctx = "מקורות עיקריים: " + ", ".join(ctx_parts)
-        else:
-            authority_ctx = ""
+            # Build authority context
+            channels = {m.channel for m in msgs if m.channel}
+            if channels:
+                scores = {c: self.authority.get_score(c) for c in channels}
+                top = sorted(scores.items(), key=lambda x: -x[1])[:3]
+                ctx_parts = [f"@{c} (אמינות: {self.authority.get_label(s)})"
+                             for c, s in top]
+                authority_ctx = "מקורות עיקריים: " + ", ".join(ctx_parts)
+            else:
+                authority_ctx = ""
 
-        texts = [m.text for m in msgs]
-        summary = await self.ai.summarize_batch(texts, authority_ctx)
-        await self.sender.send_batch_summary(summary)
+            texts = [m.text for m in msgs]
+            summary = await self.ai.summarize_batch(texts, authority_ctx)
+            await self.sender.send_batch_summary(summary)
+            self._stats["summaries"] += 1
+        except Exception:
+            self._stats["errors"] += 1
+            logger.exception("batch summary failed — %d messages dropped", len(msgs))
 
     # ─── Aggregator loop (runs in background) ────────────────────────────
     async def aggregator_loop(self):
@@ -193,9 +202,13 @@ class Pipeline:
 
     # ─── Periodic maintenance ─────────────────────────────────────────────
     async def decay_loop(self):
-        """Hourly authority decay + DB cleanup."""
+        """Hourly authority decay + DB cleanup + stats."""
         while True:
             await asyncio.sleep(3600)
             await self.authority.apply_decay()
             await self.db.cleanup_old()
-            logger.info("hourly maintenance done")
+            logger.info(
+                "hourly maintenance | stats: msgs=%d events=%d summaries=%d errors=%d",
+                self._stats["messages"], self._stats["events"],
+                self._stats["summaries"], self._stats["errors"],
+            )

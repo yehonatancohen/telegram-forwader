@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS dedup_cache (
     hash_key   TEXT PRIMARY KEY,
     created_at REAL NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
 """
 
 
@@ -207,4 +209,9 @@ class Database:
             (cutoff,),
         )
         await self._db.commit()
+        # Checkpoint WAL to prevent unbounded growth
+        try:
+            await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
         logger.debug("cleaned up records older than %ds", max_age)

@@ -1,0 +1,13 @@
+.git
+.gitignore
+*.session*
+*.env
+!config.env_example
+__pycache__/
+.pytest_cache/
+tests/
+data/
+*.md
+.circleci/
+docker-compose.yml
+gen_session.py
