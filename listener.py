@@ -37,6 +37,10 @@ START_TS = time.time()
 
 
 # ───── Helper utilities ──────────────────────────────────────────────────
+def _session_label(cli: TelegramClient) -> str:
+    """Safe label for any session type (file or StringSession)."""
+    return getattr(cli.session, 'filename', 'string-session') or 'string-session'
+
 def _clean_text(t: str) -> str:
     t = unicodedata.normalize("NFC", t)
     t = _ARABIC_DIACRITICS.sub("", t)          # strip tashkeel
@@ -96,12 +100,12 @@ async def _ensure_join(cli: TelegramClient, chans: List[str]):
             continue
         try:
             await cli(JoinChannelRequest(ch))
-            logger.info("joined @%s on %s", ch, cli.session.filename)
+            logger.info("joined @%s on %s", ch, _session_label(cli))
         except errors.FloodWaitError as e:
             logger.warning("flood-wait join @%s – sleep %ss", ch, e.seconds)
             await asyncio.sleep(e.seconds)
         except Exception:
-            logger.exception("join failed @%s on %s", ch, cli.session.filename)
+            logger.exception("join failed @%s on %s", ch, _session_label(cli))
 
 
 # ───── Main init_listeners ───────────────────────────────────────────────
@@ -270,7 +274,7 @@ async def init_listeners(
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("scanner crash %s – retry", cli.session.filename)
+                logger.exception("scanner crash %s – retry", _session_label(cli))
                 await asyncio.sleep(5)
 
     for i, (cli, _) in enumerate(pool):
@@ -279,18 +283,18 @@ async def init_listeners(
         if a:
             ids = [await cli.get_peer_id(f"@{u}") for u in a]
             cli.add_event_handler(_arab, events.NewMessage(chats=ids))
-            logger.info("arab realtime on %s (%d)", cli.session.filename, len(a))
+            logger.info("arab realtime on %s (%d)", _session_label(cli), len(a))
         if s:
             h = _mk_smart(cli)
             smart_map[cli] = h
             ids = [await cli.get_peer_id(f"@{u}") for u in s]
             cli.add_event_handler(h, events.NewMessage(chats=ids))
-            logger.info("smart realtime on %s (%d)", cli.session.filename, len(s))
+            logger.info("smart realtime on %s (%d)", _session_label(cli), len(s))
         else:
             smart_map[cli] = lambda _ev: asyncio.sleep(0)
         asyncio.create_task(_scanner(cli, a + s),
-                            name=f"scanner-{cli.session.filename}")
-        logger.info("scanner %s launched", cli.session.filename)
+                            name=f"scanner-{_session_label(cli)}")
+        logger.info("scanner %s launched", _session_label(cli))
 
     logger.info("listener ready – %d clients | %d arab | %d smart",
                 n, len(arab_channels), len(smart_channels or []))
