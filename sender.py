@@ -35,13 +35,18 @@ def _source_badge(n_sources: int) -> str:
     return "⚠️ מקור בודד"
 
 
-def _credit_footer(sources: str) -> str:
+def _credit_footer(n_channels: int, links: list[str], channels: set[str]) -> str:
     """Build the footer with sources and bot group credit."""
-    lines = [
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"📡 {sources}",
-        f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}",
-    ]
+    lines = ["━━━━━━━━━━━━━━━━━━━━"]
+    if links:
+        lines.append(f"📡 מקורות ({n_channels}):")
+        for link in links[:5]:
+            lines.append(f"🔗 {link}")
+    else:
+        srcs = ", ".join(f"@{c}" for c in sorted(channels) if c)
+        lines.append(f"📡 מקורות ({n_channels}): {srcs}")
+        
+    lines.append(f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}")
     return "\n".join(lines)
 
 
@@ -82,7 +87,7 @@ class Sender:
             f"{badge} {src_badge} | אמינות: {label}",
             "━━━━━━━━━━━━━━━━━━━━",
             summary_text,
-            _credit_footer(f"{n} ערוצים: {srcs}"),
+            _credit_footer(n, event.links, event.channels),
         ]
         if cross_note:
             lines.append(cross_note)
@@ -112,7 +117,7 @@ class Sender:
             f"{badge} ⚠️ מקור בודד | אמינות: {label}",
             "━━━━━━━━━━━━━━━━━━━━",
             summary_text,
-            _credit_footer(f"@{ch}"),
+            _credit_footer(1, event.links, event.channels),
         ]
 
         report = "\n".join(lines)

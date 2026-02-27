@@ -141,9 +141,9 @@ class Pipeline:
             # Combine raw texts, translate each to Hebrew
             parts = []
             for m in msgs[:20]:
-                src = f"@{m.channel}" if m.channel else "לא ידוע"
+                src = m.link if m.link else (f"@{m.channel}" if m.channel else "לא ידוע")
                 translated = await translate_to_hebrew(m.text[:300])
-                parts.append(f"▪ {src}: {translated}")
+                parts.append(f"▪ {src}:\n  {translated}")
 
             summary = "\n".join(parts)
             await self.sender.send_batch_summary(summary)
