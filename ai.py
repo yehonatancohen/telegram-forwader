@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gemini 2.0 Flash AI client — signature extraction & summarisation."""
+"""Groq AI client — signature extraction via Llama 3.1 (free tier: 14,400 req/day)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import asyncio, json, logging, re, time
 
 import httpx
 
-from config import GEMINI_API_KEY, GEMINI_URL, LLM_BUDGET_HOURLY, LLM_RPM_LIMIT
+from config import GROQ_API_KEY, GROQ_MODEL, LLM_BUDGET_HOURLY, LLM_RPM_LIMIT
 from models import EventSignature
 
 logger = logging.getLogger("ai")
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ───── Prompts ────────────────────────────────────────────────────────────
 
@@ -50,7 +52,7 @@ SUMMARY_PROMPT = """\
 TREND_PROMPT = """\
 סכם במדויק בשורה אחת בעברית את המידע העיקרי שדווח במספר ערוצים.
 המטרה – דיווח תמציתי וברור, בלי סגנון כתב חדשות.
-לאחר מכן החזר שורה שנייה שמתחילה ב-"> " ומכילה תרגום לעברית של ציטוט מייצג מתוך ההודעה.
+לאחר מכן החזר שורה שנייה שמתחילה ב-> ומכילה תרגום לעברית של ציטוט מייצג מתוך ההודעה.
 אל תכתוב שום דבר מעבר לשתי השורות.
 
 {authority_context}
@@ -76,21 +78,27 @@ class AIClient:
         self._calls_used += 1
         return True
 
-    async def _call(self, prompt: str, timeout: int = 20, retries: int = 3) -> str:
+    async def _call(self, prompt: str, timeout: int = 30, retries: int = 3) -> str:
         if not self._charge():
             logger.warning("AI budget exhausted, skipping call")
             return ""
         async with self._sem:
             for attempt in range(retries + 1):
                 try:
-                    logger.debug("[ai] calling Gemini (prompt len=%d, attempt=%d)...",
-                                 len(prompt), attempt + 1)
+                    logger.debug("[ai] calling Groq/%s (prompt len=%d, attempt=%d)...",
+                                 GROQ_MODEL, len(prompt), attempt + 1)
                     async with httpx.AsyncClient(timeout=timeout) as c:
                         r = await c.post(
-                            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                            GROQ_URL,
+                            headers={
+                                "Authorization": f"Bearer {GROQ_API_KEY}",
+                                "Content-Type": "application/json",
+                            },
                             json={
-                                "contents": [{"parts": [{"text": prompt}]}],
-                                "generationConfig": {"temperature": 0.2, "maxOutputTokens": 512},
+                                "model": GROQ_MODEL,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "temperature": 0.2,
+                                "max_tokens": 512,
                             },
                         )
                     if r.status_code == 429 and attempt < retries:
@@ -99,8 +107,8 @@ class AIClient:
                         await asyncio.sleep(wait)
                         continue
                     r.raise_for_status()
-                    result = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    logger.info("[ai] Gemini response OK (len=%d)", len(result))
+                    result = r.json()["choices"][0]["message"]["content"].strip()
+                    logger.info("[ai] Groq response OK (len=%d)", len(result))
                     return result
                 except Exception as exc:
                     if attempt < retries and "429" in str(exc):
@@ -108,7 +116,7 @@ class AIClient:
                         logger.warning("[ai] rate limited, retrying in %ds...", wait)
                         await asyncio.sleep(wait)
                         continue
-                    logger.error("[ai] Gemini call failed: %s", exc)
+                    logger.error("[ai] Groq call failed: %s", exc)
                     return ""
             return ""
 

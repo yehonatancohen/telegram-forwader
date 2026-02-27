@@ -207,7 +207,7 @@ async def main():
     logger.info("  Session : %s", session_type)
     logger.info("  Channels: %d arab | %d smart", len(arab), len(smart))
     logger.info("  Output  : %s", config.SMART_CHAT)
-    logger.info("  AI model: %s", config.GEMINI_MODEL)
+    logger.info("  AI model: %s (Groq)", config.GROQ_MODEL)
     logger.info("  Helper  : %s", "companion bot active" if mgr else "no companion bot")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 

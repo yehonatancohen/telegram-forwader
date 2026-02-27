@@ -56,15 +56,11 @@ MAX_BATCH_AGE        = int(os.getenv("MAX_BATCH_AGE", "300"))
 MEDIA_THRESHOLD      = int(os.getenv("MEDIA_THRESHOLD", "3"))
 SUMMARY_MIN_INTERVAL = int(os.getenv("SUMMARY_MIN_INTERVAL", "300"))
 
-# ───── Gemini AI ─────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-GEMINI_URL     = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
-LLM_BUDGET_HOURLY = int(os.getenv("LLM_BUDGET_HOURLY", "30"))
-LLM_RPM_LIMIT     = int(os.getenv("LLM_RPM_LIMIT", "14"))
+# ───── Groq AI ───────────────────────────────────────────────────────────
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+LLM_BUDGET_HOURLY = int(os.getenv("LLM_BUDGET_HOURLY", "600"))
+LLM_RPM_LIMIT     = int(os.getenv("LLM_RPM_LIMIT", "28"))
 
 # ───── Correlation ───────────────────────────────────────────────────────
 SIGNATURE_MATCH_THRESHOLD = float(os.getenv("SIGNATURE_MATCH_THRESHOLD", "0.5"))
@@ -85,7 +81,7 @@ def validate():
     if not API_HASH:          missing.append("TELEGRAM_API_HASH")
     if not PHONE:             missing.append("PHONE_NUMBER")
     if not SMART_CHAT:        missing.append("SMART_CHAT")
-    if not GEMINI_API_KEY:    missing.append("GEMINI_API_KEY")
+    if not GROQ_API_KEY:      missing.append("GROQ_API_KEY")
     if missing:
         print(f"Missing required env vars: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
