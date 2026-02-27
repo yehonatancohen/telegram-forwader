@@ -69,15 +69,38 @@ class SessionManager:
                 "Send /login to renew the session right here.",
                 parse_mode="md",
             )
+            logger.info("admin notified about session expiry")
         except Exception as e:
-            logger.error("failed to notify admin: %s", e)
+            logger.error(
+                "failed to notify admin (id=%d): %s — "
+                "make sure you've sent /start to the bot first!",
+                config.ADMIN_ID, e,
+            )
+
+    def _is_admin(self, sender_id: int) -> bool:
+        return sender_id == config.ADMIN_ID
 
     # ─── Handler registration ────────────────────────────────────────────
     def _register_handlers(self):
 
-        @self.bot.on(events.NewMessage(
-            pattern="/status", from_users=config.ADMIN_ID))
+        @self.bot.on(events.NewMessage(pattern="/start"))
+        async def start_handler(event):
+            if not self._is_admin(event.sender_id):
+                await event.respond("⛔ Unauthorized.")
+                return
+            await event.respond(
+                "🤖 **Intel Bot Companion**\n\n"
+                "Commands:\n"
+                "/status — check if the userbot is online\n"
+                "/login — renew the userbot session",
+                parse_mode="md",
+            )
+            logger.info("admin %d sent /start", event.sender_id)
+
+        @self.bot.on(events.NewMessage(pattern="/status"))
         async def status_handler(event):
+            if not self._is_admin(event.sender_id):
+                return
             if self._userbot_alive:
                 await event.respond("🟢 Userbot is **online** and running.")
             else:
@@ -86,16 +109,19 @@ class SessionManager:
                     "Send /login to renew the session."
                 )
 
-        @self.bot.on(events.NewMessage(
-            pattern="/login", from_users=config.ADMIN_ID))
+        @self.bot.on(events.NewMessage(pattern="/login"))
         async def login_handler(event):
+            if not self._is_admin(event.sender_id):
+                return
             self._login_state[event.sender_id] = {"step": "phone"}
             await event.respond(
                 "📱 Send your phone number (with country code, e.g. +972...):"
             )
 
-        @self.bot.on(events.NewMessage(from_users=config.ADMIN_ID))
+        @self.bot.on(events.NewMessage())
         async def message_handler(event):
+            if not self._is_admin(event.sender_id):
+                return
             state = self._login_state.get(event.sender_id)
             if not state:
                 return
