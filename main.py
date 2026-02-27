@@ -141,7 +141,7 @@ async def main():
     await db.init()
     logger.info("database ready")
 
-    logger.info("initializing AI client (model=%s)...", config.GEMINI_MODEL)
+    logger.info("initializing AI client (model=%s)...", config.GROQ_MODEL)
     ai = AIClient()
     authority = AuthorityTracker(db)
     event_pool = EventPool(db, ai)
