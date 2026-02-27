@@ -94,7 +94,7 @@ class Sender:
 
         report = "\n".join(lines)
 
-        if _is_sent(report):
+        if _is_sent(summary_text):
             return
 
         try:
@@ -122,7 +122,7 @@ class Sender:
 
         report = "\n".join(lines)
 
-        if _is_sent(report):
+        if _is_sent(summary_text):
             return
 
         try:

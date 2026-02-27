@@ -29,12 +29,6 @@ from sender import Sender
 logger = logging.getLogger("pipeline")
 
 
-@dataclass
-class _BatchState:
-    msgs: List[MessageInfo]
-    timer: Optional[asyncio.Task]
-
-
 class Pipeline:
     def __init__(self, db: Database, ai: AIClient, authority: AuthorityTracker,
                  event_pool: EventPool, sender: Sender):
@@ -44,14 +38,10 @@ class Pipeline:
         self.pool = event_pool
         self.sender = sender
 
-        self._batch = _BatchState([], None)
-        self._batch_lock = asyncio.Lock()
-        self._summary_lock = asyncio.Lock()
-        self._last_summary_ts = 0.0
         self._dup_cache: Deque[str] = deque(maxlen=500)
 
         # Stats
-        self._stats = {"messages": 0, "events": 0, "summaries": 0, "errors": 0}
+        self._stats = {"messages": 0, "events": 0, "errors": 0}
 
     async def process(self, info: MessageInfo):
         """Main entry point — every message (arab or smart) flows through here."""
@@ -71,27 +61,18 @@ class Pipeline:
             return
 
         score = self.authority.get_score(info.channel)
-        urgent = looks_urgent(info.text)
-        logger.debug("[pipeline] @%s score=%.1f urgent=%s", info.channel, score, urgent)
+        logger.debug("[pipeline] @%s score=%.1f", info.channel, score)
 
-        if urgent or score >= AUTHORITY_HIGH_THRESHOLD:
-            # High-priority path: AI signature extraction → event pool
-            logger.info("[pipeline] HIGH PRIORITY: @%s (urgent=%s, score=%.1f)",
-                        info.channel, urgent, score)
-            await self._high_priority(info, urgent)
-        else:
-            # Medium/low: batch collector + cheap SHA1 pre-check
-            match_id = self.pool.sha1_match(info.text)
-            if match_id:
-                # Text matches an existing event — add corroboration
-                await self.pool.ingest_by_sha1(info, match_id)
-                logger.debug("SHA1 match for @%s on event %s",
-                             info.channel, match_id[:8])
-            else:
-                await self._batch_push(info)
+        # 1) Fast path: Deduplicate highly identical forwarded text
+        match_id = self.pool.sha1_match(info.text)
+        if match_id:
+            await self.pool.ingest_by_sha1(info, match_id)
+            logger.debug("SHA1 match for @%s on event %s", info.channel, match_id[:8])
+            return
 
-    async def _high_priority(self, info: MessageInfo, urgent: bool):
-        """Extract signature via AI and feed into event pool."""
+        # 2) AI extraction
+        # All distinct messages now go through Groq AI (14,400 requests/day allows ~10/min)
+        # Irrelevant or spammy messages will return `None` (event_type="irrelevant") and be dropped.
         logger.info("[pipeline] extracting AI signature for @%s...", info.channel)
         sig = await self.ai.extract_signature(info.text)
         if sig:
@@ -99,58 +80,9 @@ class Pipeline:
             await self.pool.ingest_with_signature(sig, info)
             logger.info("[pipeline] signature: type=%s location=%s from @%s",
                         sig.event_type, sig.location or "?", info.channel)
-        elif urgent:
-            logger.info("[pipeline] AI returned no signature but msg is urgent, batching @%s",
-                        info.channel)
-            # AI failed but message looks urgent — still add to batch
-            await self._batch_push(info)
         else:
-            logger.debug("[pipeline] AI returned no signature for @%s", info.channel)
+            logger.debug("[pipeline] message dropped (irrelevant/no sig) from @%s", info.channel)
 
-    # ─── Batch collector ──────────────────────────────────────────────────
-    async def _batch_push(self, info: MessageInfo):
-        async with self._batch_lock:
-            self._batch.msgs.append(info)
-            if len(self._batch.msgs) >= BATCH_SIZE:
-                await self._flush_batch()
-            elif not self._batch.timer or self._batch.timer.done():
-                self._batch.timer = asyncio.create_task(self._auto_flush())
-
-    async def _auto_flush(self):
-        await asyncio.sleep(MAX_BATCH_AGE)
-        async with self._batch_lock:
-            await self._flush_batch()
-
-    async def _flush_batch(self):
-        if not self._batch.msgs:
-            return
-        msgs = self._batch.msgs
-        self._batch.msgs = []
-        logger.info("[pipeline] flushing batch of %d messages for summary", len(msgs))
-        asyncio.create_task(self._send_summary(msgs))
-
-    async def _send_summary(self, msgs: List[MessageInfo]):
-        """Forward batch messages as a combined summary (translated to Hebrew)."""
-        try:
-            async with self._summary_lock:
-                wait = SUMMARY_MIN_INTERVAL - (time.time() - self._last_summary_ts)
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                self._last_summary_ts = time.time()
-
-            # Combine raw texts, translate each to Hebrew
-            parts = []
-            for m in msgs[:20]:
-                src = m.link if m.link else (f"@{m.channel}" if m.channel else "לא ידוע")
-                translated = await translate_to_hebrew(m.text[:300])
-                parts.append(f"▪ {src}:\n  {translated}")
-
-            summary = "\n".join(parts)
-            await self.sender.send_batch_summary(summary)
-            self._stats["summaries"] += 1
-        except Exception:
-            self._stats["errors"] += 1
-            logger.exception("batch summary failed — %d messages dropped", len(msgs))
 
     # ─── Aggregator loop (runs in background) ────────────────────────────
     async def aggregator_loop(self):
@@ -208,7 +140,7 @@ class Pipeline:
             await self.authority.apply_decay()
             await self.db.cleanup_old()
             logger.info(
-                "hourly maintenance | stats: msgs=%d events=%d summaries=%d errors=%d",
+                "hourly maintenance | stats: msgs=%d events=%d errors=%d",
                 self._stats["messages"], self._stats["events"],
-                self._stats["summaries"], self._stats["errors"],
+                self._stats["errors"],
             )
