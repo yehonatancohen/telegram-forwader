@@ -129,6 +129,7 @@ class Pipeline:
         asyncio.create_task(self._send_summary(msgs))
 
     async def _send_summary(self, msgs: List[MessageInfo]):
+        """Forward batch messages as a combined summary (no AI call)."""
         try:
             async with self._summary_lock:
                 wait = SUMMARY_MIN_INTERVAL - (time.time() - self._last_summary_ts)
@@ -136,19 +137,13 @@ class Pipeline:
                     await asyncio.sleep(wait)
                 self._last_summary_ts = time.time()
 
-            # Build authority context
-            channels = {m.channel for m in msgs if m.channel}
-            if channels:
-                scores = {c: self.authority.get_score(c) for c in channels}
-                top = sorted(scores.items(), key=lambda x: -x[1])[:3]
-                ctx_parts = [f"@{c} (אמינות: {self.authority.get_label(s)})"
-                             for c, s in top]
-                authority_ctx = "מקורות עיקריים: " + ", ".join(ctx_parts)
-            else:
-                authority_ctx = ""
+            # Combine raw texts into a readable summary
+            parts = []
+            for m in msgs[:20]:
+                src = f"@{m.channel}" if m.channel else "לא ידוע"
+                parts.append(f"▪ {src}: {m.text[:200]}")
 
-            texts = [m.text for m in msgs]
-            summary = await self.ai.summarize_batch(texts, authority_ctx)
+            summary = "\n".join(parts)
             await self.sender.send_batch_summary(summary)
             self._stats["summaries"] += 1
         except Exception:
@@ -186,32 +181,21 @@ class Pipeline:
                 self.pool.expire(eid)
 
     async def _dispatch_trend(self, ev):
-        """Generate and send a trend report."""
-        # Build authority context for the summary
-        scores = {c: self.authority.get_score(c) for c in ev.channels}
-        top = sorted(scores.items(), key=lambda x: -x[1])[:3]
-        ctx = "מקורות: " + ", ".join(
-            f"@{c} ({self.authority.get_label(s)})" for c, s in top
-        )
-
-        summary = await self.ai.summarize_trend(ev.texts[0], ctx)
+        """Send a trend report using raw text (no AI summary)."""
+        # Use the first (longest) text as the report body
+        text = max(ev.texts, key=len) if ev.texts else ""
+        n = len(ev.channels)
+        summary = text[:500]
         if not summary:
-            n = len(ev.channels)
-            quote = ev.texts[0][:120]
-            summary = (
-                f"עדכון מגמה: דיווחים חוזרים ({n} ערוצים) "
-                f"על אירוע/תנועה חריגה.\n> \"{quote}...\""
-            )
+            summary = f"דיווחים חוזרים ({n} ערוצים) על אירוע חריג."
+        logger.info("[pipeline] dispatching trend report (%d sources)", n)
         await self.sender.send_trend_report(ev, summary)
 
     async def _dispatch_single(self, ev):
-        """Generate and send a single high-authority source alert."""
+        """Send a single high-authority source alert using raw text (no AI summary)."""
+        summary = ev.texts[0][:500] if ev.texts else ""
         ch = next(iter(ev.channels))
-        ctx = f"מקור: @{ch} (אמינות {self.authority.get_label(self.authority.get_score(ch))})"
-
-        summary = await self.ai.summarize_trend(ev.texts[0], ctx)
-        if not summary:
-            summary = ev.texts[0][:200]
+        logger.info("[pipeline] dispatching single-source alert (@%s)", ch)
         await self.sender.send_single_source_alert(ev, summary)
 
     # ─── Periodic maintenance ─────────────────────────────────────────────

@@ -125,9 +125,12 @@ async def main():
     ai = AIClient()
     authority = AuthorityTracker(db)
     event_pool = EventPool(db, ai)
-    sender = Sender(client, authority, config.ARABS_SUMMARY_OUT, config.SMART_CHAT)
+    sender = Sender(client, authority, config.SMART_CHAT)
     pipeline = Pipeline(db, ai, authority, event_pool, sender)
     logger.info("pipeline components initialized")
+
+    if mgr:
+        mgr.set_pipeline_stats(pipeline._stats)
 
     # Load channel lists
     logger.info("loading channel lists...")
@@ -183,7 +186,7 @@ async def main():
     logger.info("  Account : %s (id=%d)", me.first_name, me.id)
     logger.info("  Session : %s", session_type)
     logger.info("  Channels: %d arab | %d smart", len(arab), len(smart))
-    logger.info("  Output  : %s", config.ARABS_SUMMARY_OUT)
+    logger.info("  Output  : %s", config.SMART_CHAT)
     logger.info("  AI model: %s", config.GEMINI_MODEL)
     logger.info("  Helper  : %s", "companion bot active" if mgr else "no companion bot")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

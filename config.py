@@ -56,7 +56,7 @@ GEMINI_URL     = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
 )
-LLM_BUDGET_HOURLY = int(os.getenv("LLM_BUDGET_HOURLY", "120"))
+LLM_BUDGET_HOURLY = int(os.getenv("LLM_BUDGET_HOURLY", "30"))
 LLM_RPM_LIMIT     = int(os.getenv("LLM_RPM_LIMIT", "14"))
 
 # ───── Correlation ───────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ def validate():
     missing = []
     if not API_HASH:          missing.append("TELEGRAM_API_HASH")
     if not PHONE:             missing.append("PHONE_NUMBER")
-    if not ARABS_SUMMARY_OUT: missing.append("ARABS_SUMMARY_OUT")
+    if not SMART_CHAT:        missing.append("SMART_CHAT")
     if not GEMINI_API_KEY:    missing.append("GEMINI_API_KEY")
     if missing:
         print(f"Missing required env vars: {', '.join(missing)}", file=sys.stderr)

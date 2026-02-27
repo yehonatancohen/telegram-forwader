@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Output formatting and sending to Telegram output channels."""
+"""Output formatting and sending to Telegram output channel."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from models import AggEvent
 logger = logging.getLogger("sender")
 
 SENT_CACHE: Deque[str] = deque(maxlen=800)
+BOT_GROUP_LINK = "https://t.me/+QlRlin8-CU0yMjZk"
 
 
 def _reliability_badge(score: float) -> str:
-    """Return emoji badge based on authority score."""
     if score >= 75:
         return "🟢"
     if score >= 55:
@@ -28,7 +28,6 @@ def _reliability_badge(score: float) -> str:
 
 
 def _source_badge(n_sources: int) -> str:
-    """Return badge based on number of corroborating sources."""
     if n_sources >= 3:
         return "✅ מאומת"
     if n_sources == 2:
@@ -36,21 +35,31 @@ def _source_badge(n_sources: int) -> str:
     return "⚠️ מקור בודד"
 
 
+def _credit_footer(sources: str, links: list[str]) -> str:
+    """Build the footer with sources and bot group credit."""
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📡 {sources}",
+    ]
+    for link in links[:3]:
+        if link:
+            lines.append(f"🔗 {link}")
+    lines.append(f"📢 מקור: {BOT_GROUP_LINK}")
+    return "\n".join(lines)
+
+
 class Sender:
     def __init__(self, client: TelegramClient, authority: AuthorityTracker,
-                 arabs_chat: int, smart_chat: int):
+                 output_chat: int):
         self.client = client
         self.authority = authority
-        self.arabs_chat = arabs_chat
-        self.smart_chat = smart_chat
+        self.output_chat = output_chat
 
     async def send_trend_report(self, event: AggEvent, summary_text: str):
-        """Send a multi-source trend report to the arab output channel."""
+        """Send a multi-source trend report."""
         srcs = ", ".join(f"@{c}" for c in sorted(event.channels) if c)
-        link = event.links[0] if event.links else ""
         n = len(event.channels)
 
-        # Authority context
         scores = [self.authority.get_score(c) for c in event.channels]
         avg_score = sum(scores) / len(scores) if scores else 50
         badge = _reliability_badge(avg_score)
@@ -65,13 +74,10 @@ class Sender:
 
         lines = [
             f"{badge} {src_badge} | אמינות: {label}",
-            f"━━━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━━━",
             summary_text,
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"📡 {n} ערוצים: {srcs}",
+            _credit_footer(f"{n} ערוצים: {srcs}", event.links),
         ]
-        if link:
-            lines.append(f"🔗 {link}")
         if cross_note:
             lines.append(cross_note)
 
@@ -83,10 +89,10 @@ class Sender:
         SENT_CACHE.append(h)
 
         try:
-            await self.client.send_message(self.arabs_chat, report,
+            await self.client.send_message(self.output_chat, report,
                                            link_preview=False)
-            logger.info("[sender] trend report SENT (%d channels, reliability=%s, badge=%s)",
-                        n, label, src_badge)
+            logger.info("[sender] trend report SENT (%d channels, reliability=%s)",
+                        n, label)
         except Exception as exc:
             logger.error("[sender] trend send FAILED: %s", exc)
 
@@ -97,17 +103,13 @@ class Sender:
         score = self.authority.get_score(ch)
         badge = _reliability_badge(score)
         label = self.authority.get_label(score)
-        link = event.links[0] if event.links else ""
 
         lines = [
             f"{badge} ⚠️ מקור בודד | אמינות: {label}",
-            f"━━━━━━━━━━━━━━━━━━━━",
+            "━━━━━━━━━━━━━━━━━━━━",
             summary_text,
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"📡 @{ch}",
+            _credit_footer(f"@{ch}", event.links),
         ]
-        if link:
-            lines.append(f"🔗 {link}")
 
         report = "\n".join(lines)
 
@@ -117,7 +119,7 @@ class Sender:
         SENT_CACHE.append(h)
 
         try:
-            await self.client.send_message(self.arabs_chat, report,
+            await self.client.send_message(self.output_chat, report,
                                            link_preview=False)
             logger.info("[sender] single-source alert SENT (@%s, score=%.0f)", ch, score)
         except Exception as exc:
@@ -127,9 +129,16 @@ class Sender:
         """Send a periodic batch summary."""
         if not summary:
             return
-        report = f"📋 סיכום תקופתי\n━━━━━━━━━━━━━━━━━━━━\n{summary}"
+        lines = [
+            "📋 סיכום תקופתי",
+            "━━━━━━━━━━━━━━━━━━━━",
+            summary,
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📢 מקור: {BOT_GROUP_LINK}",
+        ]
+        report = "\n".join(lines)
         try:
-            await self.client.send_message(self.arabs_chat, report,
+            await self.client.send_message(self.output_chat, report,
                                            link_preview=False)
             logger.info("[sender] batch summary SENT (len=%d)", len(summary))
         except Exception as exc:
