@@ -21,8 +21,8 @@ def _has_arabic(text: str) -> bool:
 
 
 @lru_cache(maxsize=256)
-def _translate_sync(text: str, source: str = "ar", target: str = "he") -> str:
-    """Synchronous translation (cached)."""
+def _translate_sync(text: str, source: str = "auto", target: str = "iw") -> str:
+    """Synchronous translation (cached). Uses 'iw' for Hebrew (Google's code)."""
     try:
         from deep_translator import GoogleTranslator
         translator = GoogleTranslator(source=source, target=target)

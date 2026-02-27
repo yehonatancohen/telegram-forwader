@@ -35,17 +35,23 @@ def _source_badge(n_sources: int) -> str:
     return "⚠️ מקור בודד"
 
 
-def _credit_footer(sources: str, links: list[str]) -> str:
+def _credit_footer(sources: str) -> str:
     """Build the footer with sources and bot group credit."""
     lines = [
         "━━━━━━━━━━━━━━━━━━━━",
         f"📡 {sources}",
+        f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}",
     ]
-    for link in links[:3]:
-        if link:
-            lines.append(f"🔗 {link}")
-    lines.append(f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}")
     return "\n".join(lines)
+
+
+def _is_sent(text: str) -> bool:
+    """Check if this content was already sent (dedup)."""
+    h = sha1(text.encode()).hexdigest()[:16]
+    if h in SENT_CACHE:
+        return True
+    SENT_CACHE.append(h)
+    return False
 
 
 class Sender:
@@ -76,17 +82,15 @@ class Sender:
             f"{badge} {src_badge} | אמינות: {label}",
             "━━━━━━━━━━━━━━━━━━━━",
             summary_text,
-            _credit_footer(f"{n} ערוצים: {srcs}", event.links),
+            _credit_footer(f"{n} ערוצים: {srcs}"),
         ]
         if cross_note:
             lines.append(cross_note)
 
         report = "\n".join(lines)
 
-        h = sha1(report.encode()).hexdigest()[:16]
-        if h in SENT_CACHE:
+        if _is_sent(report):
             return
-        SENT_CACHE.append(h)
 
         try:
             await self.client.send_message(self.output_chat, report,
@@ -108,15 +112,13 @@ class Sender:
             f"{badge} ⚠️ מקור בודד | אמינות: {label}",
             "━━━━━━━━━━━━━━━━━━━━",
             summary_text,
-            _credit_footer(f"@{ch}", event.links),
+            _credit_footer(f"@{ch}"),
         ]
 
         report = "\n".join(lines)
 
-        h = sha1(report.encode()).hexdigest()[:16]
-        if h in SENT_CACHE:
+        if _is_sent(report):
             return
-        SENT_CACHE.append(h)
 
         try:
             await self.client.send_message(self.output_chat, report,
@@ -126,20 +128,25 @@ class Sender:
             logger.error("[sender] single-source send FAILED: %s", exc)
 
     async def send_batch_summary(self, summary: str):
-        """Send a periodic batch summary."""
+        """Send a batch intel digest."""
         if not summary:
             return
+
         lines = [
-            "📋 סיכום תקופתי",
+            "🔔 עדכון מודיעין",
             "━━━━━━━━━━━━━━━━━━━━",
             summary,
             "━━━━━━━━━━━━━━━━━━━━",
             f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}",
         ]
         report = "\n".join(lines)
+
+        if _is_sent(report):
+            return
+
         try:
             await self.client.send_message(self.output_chat, report,
                                            link_preview=False)
-            logger.info("[sender] batch summary SENT (len=%d)", len(summary))
+            logger.info("[sender] intel digest SENT (len=%d)", len(summary))
         except Exception as exc:
-            logger.error("[sender] summary send FAILED: %s", exc)
+            logger.error("[sender] digest send FAILED: %s", exc)
