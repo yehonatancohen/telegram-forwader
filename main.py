@@ -50,10 +50,13 @@ def _load_usernames(path: Path) -> list[str]:
 async def _start_companion_bot() -> SessionManager | None:
     """Start the companion bot if BOT_TOKEN + ADMIN_ID are configured."""
     if not config.BOT_TOKEN or not config.ADMIN_ID:
+        logger.info("companion bot: skipped (BOT_TOKEN or ADMIN_ID not set)")
         return None
     try:
+        logger.info("companion bot: starting...")
         mgr = SessionManager()
         await mgr.start()
+        logger.info("companion bot: ready")
         return mgr
     except Exception:
         logger.exception("companion bot failed to start")
@@ -85,6 +88,7 @@ async def main():
         sys.exit(1)
 
     _session = StringSession(session_str) if session_str else str(config.SESSION_PATH)
+    logger.info("creating Telegram client (api_id=%d)...", config.API_ID)
     client = TelegramClient(
         _session, config.API_ID, config.API_HASH,
         connection_retries=-1, retry_delay=5, timeout=10,
@@ -92,7 +96,9 @@ async def main():
 
     # ─── Userbot login ────────────────────────────────────────────────
     try:
+        logger.info("connecting to Telegram...")
         await client.start(phone=lambda: config.PHONE)
+        logger.info("connected to Telegram")
     except Exception:
         logger.exception("userbot connection failed")
         if mgr:
@@ -110,24 +116,34 @@ async def main():
         mgr.set_userbot_status(True)
 
     # ─── Init components ──────────────────────────────────────────────
+    logger.info("initializing database at %s...", config.DB_PATH)
     db = Database(config.DB_PATH)
     await db.init()
+    logger.info("database ready")
 
+    logger.info("initializing AI client (model=%s)...", config.GEMINI_MODEL)
     ai = AIClient()
     authority = AuthorityTracker(db)
     event_pool = EventPool(db, ai)
     sender = Sender(client, authority, config.ARABS_SUMMARY_OUT, config.SMART_CHAT)
     pipeline = Pipeline(db, ai, authority, event_pool, sender)
+    logger.info("pipeline components initialized")
 
     # Load channel lists
+    logger.info("loading channel lists...")
     arab = _load_usernames(config.ARAB_SOURCES_FILE)
     smart = _load_usernames(config.SMART_SOURCES_FILE)
+    logger.info("loaded %d arab channels, %d smart channels", len(arab), len(smart))
 
     # Init authority scores & restore pending events
+    logger.info("loading authority scores...")
     await authority.load(arab, smart)
+    logger.info("restoring pending events from DB...")
     await event_pool.load_from_db()
+    logger.info("event pool ready (%d active events)", len(event_pool.active))
 
     # ─── Wire listeners ───────────────────────────────────────────────
+    logger.info("wiring listeners...")
     await init_listeners(
         client=client,
         arab_channels=arab,
@@ -135,10 +151,13 @@ async def main():
         pipeline_push=pipeline.process,
         smart_chat_id=config.SMART_CHAT or None,
     )
+    logger.info("listeners wired")
 
     # ─── Background tasks ─────────────────────────────────────────────
+    logger.info("starting background tasks (aggregator + decay)...")
     asyncio.create_task(pipeline.aggregator_loop(), name="aggregator")
     asyncio.create_task(pipeline.decay_loop(), name="decay")
+    logger.info("background tasks started")
 
     # ─── Graceful shutdown ────────────────────────────────────────────
     async def _shutdown():

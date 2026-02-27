@@ -55,21 +55,28 @@ class Pipeline:
     async def process(self, info: MessageInfo):
         """Main entry point — every message (arab or smart) flows through here."""
         self._stats["messages"] += 1
+        logger.info("[pipeline] msg from @%s (%s) len=%d",
+                    info.channel or "?", info.channel_type, len(info.text))
         # Quick in-memory dedup
         h = sha1(info.text.encode()).hexdigest()
         if h in self._dup_cache:
+            logger.debug("[pipeline] in-memory dedup skip @%s", info.channel)
             return
         self._dup_cache.append(h)
 
         # Also check SQLite dedup
         if await self.db.is_dup(h):
+            logger.debug("[pipeline] sqlite dedup skip @%s", info.channel)
             return
 
         score = self.authority.get_score(info.channel)
         urgent = looks_urgent(info.text)
+        logger.debug("[pipeline] @%s score=%.1f urgent=%s", info.channel, score, urgent)
 
         if urgent or score >= AUTHORITY_HIGH_THRESHOLD:
             # High-priority path: AI signature extraction → event pool
+            logger.info("[pipeline] HIGH PRIORITY: @%s (urgent=%s, score=%.1f)",
+                        info.channel, urgent, score)
             await self._high_priority(info, urgent)
         else:
             # Medium/low: batch collector + cheap SHA1 pre-check
@@ -84,14 +91,20 @@ class Pipeline:
 
     async def _high_priority(self, info: MessageInfo, urgent: bool):
         """Extract signature via AI and feed into event pool."""
+        logger.info("[pipeline] extracting AI signature for @%s...", info.channel)
         sig = await self.ai.extract_signature(info.text)
         if sig:
+            self._stats["events"] += 1
             await self.pool.ingest_with_signature(sig, info)
-            logger.debug("signature extracted for @%s: %s/%s",
-                         info.channel, sig.event_type, sig.location or "?")
+            logger.info("[pipeline] signature: type=%s location=%s from @%s",
+                        sig.event_type, sig.location or "?", info.channel)
         elif urgent:
+            logger.info("[pipeline] AI returned no signature but msg is urgent, batching @%s",
+                        info.channel)
             # AI failed but message looks urgent — still add to batch
             await self._batch_push(info)
+        else:
+            logger.debug("[pipeline] AI returned no signature for @%s", info.channel)
 
     # ─── Batch collector ──────────────────────────────────────────────────
     async def _batch_push(self, info: MessageInfo):
@@ -112,6 +125,7 @@ class Pipeline:
             return
         msgs = self._batch.msgs
         self._batch.msgs = []
+        logger.info("[pipeline] flushing batch of %d messages for summary", len(msgs))
         asyncio.create_task(self._send_summary(msgs))
 
     async def _send_summary(self, msgs: List[MessageInfo]):

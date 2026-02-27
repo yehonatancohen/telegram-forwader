@@ -85,10 +85,10 @@ class Sender:
         try:
             await self.client.send_message(self.arabs_chat, report,
                                            link_preview=False)
-            logger.info("trend report sent (%d channels, reliability: %s)",
-                        n, label)
+            logger.info("[sender] trend report SENT (%d channels, reliability=%s, badge=%s)",
+                        n, label, src_badge)
         except Exception as exc:
-            logger.error("trend send fail: %s", exc)
+            logger.error("[sender] trend send FAILED: %s", exc)
 
     async def send_single_source_alert(self, event: AggEvent,
                                        summary_text: str):
@@ -119,9 +119,9 @@ class Sender:
         try:
             await self.client.send_message(self.arabs_chat, report,
                                            link_preview=False)
-            logger.info("single-source alert sent (@%s, score: %.0f)", ch, score)
+            logger.info("[sender] single-source alert SENT (@%s, score=%.0f)", ch, score)
         except Exception as exc:
-            logger.error("single-source send fail: %s", exc)
+            logger.error("[sender] single-source send FAILED: %s", exc)
 
     async def send_batch_summary(self, summary: str):
         """Send a periodic batch summary."""
@@ -131,6 +131,6 @@ class Sender:
         try:
             await self.client.send_message(self.arabs_chat, report,
                                            link_preview=False)
-            logger.info("batch summary sent")
+            logger.info("[sender] batch summary SENT (len=%d)", len(summary))
         except Exception as exc:
-            logger.error("summary send error: %s", exc)
+            logger.error("[sender] summary send FAILED: %s", exc)

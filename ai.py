@@ -78,9 +78,11 @@ class AIClient:
 
     async def _call(self, prompt: str, timeout: int = 20) -> str:
         if not self._charge():
+            logger.warning("AI budget exhausted, skipping call")
             return ""
         async with self._sem:
             try:
+                logger.debug("[ai] calling Gemini (prompt len=%d)...", len(prompt))
                 async with httpx.AsyncClient(timeout=timeout) as c:
                     r = await c.post(
                         f"{GEMINI_URL}?key={GEMINI_API_KEY}",
@@ -90,23 +92,29 @@ class AIClient:
                         },
                     )
                 r.raise_for_status()
-                return (
-                    r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                )
+                result = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                logger.info("[ai] Gemini response OK (len=%d)", len(result))
+                return result
             except Exception as exc:
-                logger.error("Gemini call failed: %s", exc)
+                logger.error("[ai] Gemini call failed: %s", exc)
                 return ""
 
     # ─── Signature extraction ─────────────────────────────────────────────
     async def extract_signature(self, text: str) -> EventSignature | None:
+        logger.info("[ai] extracting signature (text len=%d)...", len(text))
         raw = await self._call(EXTRACT_PROMPT + text[:1500])
         if not raw:
+            logger.debug("[ai] extraction returned empty")
             return None
         try:
             parsed = _parse_json(raw)
             if not parsed or parsed.get("event_type") == "irrelevant":
+                logger.debug("[ai] event classified as irrelevant")
                 return None
-            return EventSignature.from_dict(parsed)
+            sig = EventSignature.from_dict(parsed)
+            logger.info("[ai] extracted: type=%s loc=%s entities=%s",
+                        sig.event_type, sig.location, sig.entities)
+            return sig
         except Exception as exc:
             logger.warning("signature parse failed: %s | raw: %s", exc, raw[:200])
             return None
@@ -114,10 +122,13 @@ class AIClient:
     # ─── Batch summary ────────────────────────────────────────────────────
     async def summarize_batch(self, texts: list[str],
                               authority_context: str = "") -> str:
+        logger.info("[ai] summarizing batch of %d texts...", len(texts))
         blob = "\n---\n".join(t[:500] for t in texts[:20])
         prompt = SUMMARY_PROMPT.format(messages=blob,
                                        authority_context=authority_context)
-        return await self._call(prompt)
+        result = await self._call(prompt)
+        logger.info("[ai] batch summary done (len=%d)", len(result))
+        return result
 
     # ─── Trend report ─────────────────────────────────────────────────────
     async def summarize_trend(self, text: str,

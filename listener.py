@@ -162,10 +162,16 @@ async def init_listeners(
         if msg.date.timestamp() < START_TS:
             return
         if _is_blocked(msg.text or "") and not msg.media:
+            logger.debug("[arab] blocked msg id=%s from @%s",
+                         msg.id, getattr(msg.chat, "username", "?"))
             return
         txt = _clean_text(msg.text or "")
         if _is_dup(txt):
+            logger.debug("[arab] dedup skip id=%s from @%s",
+                         msg.id, getattr(msg.chat, "username", "?"))
             return
+        logger.info("[arab] msg id=%s from @%s len=%d",
+                    msg.id, getattr(msg.chat, "username", "?"), len(txt))
         mid = None
         if msg.photo:        mid = str(msg.photo.id)
         elif msg.document:   mid = str(msg.document.id)
@@ -221,6 +227,8 @@ async def init_listeners(
             # 2) ALSO feed into the pipeline for cross-correlation
             txt = _clean_text(msg.text or "")
             if txt and not _is_blocked(txt):
+                logger.info("[smart] msg id=%s from @%s len=%d",
+                            msg.id, getattr(msg.chat, "username", "?"), len(txt))
                 mid = None
                 if msg.photo:        mid = str(msg.photo.id)
                 elif msg.document:   mid = str(msg.document.id)

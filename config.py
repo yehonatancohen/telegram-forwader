@@ -24,7 +24,8 @@ SESSION_STRING = os.getenv("TG_SESSION_STRING", "")
 
 # ───── Companion bot (session renewal) ───────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")       # @BotFather token
-ADMIN_ID  = int(os.getenv("ADMIN_ID", "0"))  # your Telegram user ID
+_admin_raw = os.getenv("ADMIN_ID", "").strip()
+ADMIN_ID  = int(_admin_raw) if _admin_raw else 0  # your Telegram user ID
 
 # Fallback: file-based session (only used if SESSION_STRING is empty)
 SESSION_NAME = os.getenv("SESSION_NAME", "arab-ai")
