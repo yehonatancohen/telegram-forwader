@@ -32,7 +32,7 @@ services:
     container_name: clearmap-brain
     restart: unless-stopped
     volumes:
-      - intel-data:/data:ro
+      - intel-data:/data
       - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
     environment:
       - TELEGRAM_DB_PATH=/data/intel.db

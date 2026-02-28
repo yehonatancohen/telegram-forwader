@@ -64,6 +64,17 @@ INTEL_CHANNELS = {"beforeredalert", "yemennews7071"}
 # Keywords that indicate incoming alerts → mark location yellow
 INTEL_KEYWORDS = ["יציאות", "שיגורים", "להתמגן", "שיגור", "טילים", "רקטות"]
 
+# Keywords that indicate alert is OVER (people can leave shelters) → skip message
+INTEL_CANCEL_KEYWORDS = [
+    "ניתן לצאת",        # "you can leave"
+    "הותר לצאת",        # "permitted to leave"
+    "איתות ירוק",       # "green signal"
+    "הסתיים",           # "ended"
+    "בוטלה",            # "cancelled" (fem)
+    "בוטל",             # "cancelled" (masc)
+    "אין איום",         # "no threat"
+]
+
 # Region name → list of district names for area mapping
 REGION_MAPPING = {
     "צפון": ["מחוז צפון", "מחוז גליל עליון", "מחוז גליל תחתון", "מחוז גולן",
@@ -309,6 +320,11 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
             if not raw:
                 continue
             
+            # Skip "all clear" / "leave shelter" messages
+            if any(ck in raw for ck in INTEL_CANCEL_KEYWORDS):
+                log.debug("Skipping cancel/all-clear message from @%s", row["channel"])
+                continue
+
             # Check if message contains alert keywords
             has_keyword = any(kw in raw for kw in INTEL_KEYWORDS)
             if has_keyword:
