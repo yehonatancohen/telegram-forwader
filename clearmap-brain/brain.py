@@ -89,7 +89,6 @@ REGION_KEYWORDS = {
 
 # ── Import District Metadata ────────────────────────────────────────────────
 try:
-    sys.path.append(str(Path(__file__).parent / "oref_alert" / "custom_components" / "oref_alert" / "metadata"))
     from district_to_areas import DISTRICT_AREAS
 except ImportError:
     DISTRICT_AREAS = {}

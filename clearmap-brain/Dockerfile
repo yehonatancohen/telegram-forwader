@@ -9,8 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy brain code + metadata dependency
-COPY brain.py polygons.json ./
-COPY oref_alert/custom_components/oref_alert/metadata/ ./oref_alert/custom_components/oref_alert/metadata/
+COPY brain.py polygons.json district_to_areas.py ./
 
 # serviceAccountKey.json is mounted at runtime (not baked into image)
 
