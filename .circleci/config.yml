@@ -35,6 +35,28 @@ jobs:
               -t $DOCKERHUB_USERNAME/telegram-reporter:$CIRCLE_SHA1 \
               --push .
 
+  build-and-push-brain:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Set up Docker Buildx
+          command: |
+            docker buildx create --use --name multiarch
+            docker buildx inspect --bootstrap
+      - run:
+          name: Build and push clearmap-brain image
+          command: |
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -t $DOCKERHUB_USERNAME/clearmap-brain:latest \
+              -t $DOCKERHUB_USERNAME/clearmap-brain:$CIRCLE_SHA1 \
+              --push ./clearmap-brain
+
 workflows:
   build-test-deploy:
     jobs:
@@ -42,6 +64,10 @@ workflows:
       - build-and-push:
           requires:
             - test
+          filters:
+            branches:
+              only: main
+      - build-and-push-brain:
           filters:
             branches:
               only: main

@@ -25,17 +25,15 @@ services:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_POLL_INTERVAL=300
       - WATCHTOWER_LABEL_ENABLE=false
-    command: telegram-intel
+    command: telegram-intel clearmap-brain
 
   clearmap-brain:
-    build:
-      context: ./clearmap-brain
-      dockerfile: Dockerfile
+    image: yehonatancohen/clearmap-brain:latest
     container_name: clearmap-brain
     restart: unless-stopped
     volumes:
       - intel-data:/data:ro
-      - ./clearmap-brain/serviceAccountKey.json:/app/serviceAccountKey.json:ro
+      - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
     environment:
       - TELEGRAM_DB_PATH=/data/intel.db
       - SERVICE_ACCOUNT_FILE=/app/serviceAccountKey.json
