@@ -27,5 +27,25 @@ services:
       - WATCHTOWER_LABEL_ENABLE=false
     command: telegram-intel
 
+  clearmap-brain:
+    build:
+      context: ./clearmap-brain
+      dockerfile: Dockerfile
+    container_name: clearmap-brain
+    restart: unless-stopped
+    volumes:
+      - intel-data:/data:ro
+      - ./clearmap-brain/serviceAccountKey.json:/app/serviceAccountKey.json:ro
+    environment:
+      - TELEGRAM_DB_PATH=/data/intel.db
+      - SERVICE_ACCOUNT_FILE=/app/serviceAccountKey.json
+    depends_on:
+      - telegram-intel
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   intel-data:
