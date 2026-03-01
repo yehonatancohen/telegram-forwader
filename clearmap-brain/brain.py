@@ -183,9 +183,9 @@ def _classify_alert_object(alert_obj: dict) -> str:
     if cat == "1":
         return "alert"
 
-    # cat 10 can be either pre-alert or after-alert
+    # cat 10: "ניתן לצאת" = clearance → remove from map
     if "ניתן לצאת" in title or "להישאר בקרבת" in title:
-        return "after_alert"
+        return "clear"
     if "בדקות הקרובות" in title or "שהייה בסמיכות" in title or "לשפר את המיקום" in title:
         return "pre_alert"
 
@@ -432,6 +432,15 @@ def update_state(
     
     oref_cities = {city for city, _ in oref_data}
     
+    # ── Step 1b: Handle clearance signals (remove from map) ────────────
+    for city_he, status in list(incoming.items()):
+        if status == "clear":
+            if city_he in state:
+                log.info("✅ CLEARED by Oref: %s", city_he)
+                del state[city_he]
+                changed = True
+            del incoming[city_he]
+
     # ── Step 2: Process incoming signals ──────────────────────────────────
     for city_he, alert_type in incoming.items():
         if city_he in state:
