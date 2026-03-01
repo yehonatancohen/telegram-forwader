@@ -183,8 +183,8 @@ def _classify_alert_object(alert_obj: dict) -> str:
     if cat == "1":
         return "alert"
 
-    # cat 10: "ניתן לצאת" = clearance → remove from map
-    if "ניתן לצאת" in title or "להישאר בקרבת" in title:
+    # cat 10: clearance signals → remove from map
+    if "ניתן לצאת" in title or "להישאר בקרבת" in title or "הסתיים" in title:
         return "clear"
     if "בדקות הקרובות" in title or "שהייה בסמיכות" in title or "לשפר את המיקום" in title:
         return "pre_alert"
