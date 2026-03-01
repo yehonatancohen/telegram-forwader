@@ -171,21 +171,29 @@ def init_firebase():
 
 def _classify_alert_object(alert_obj: dict) -> str:
     """Classify a single Oref alert object into a status string.
-    
+
     Based on real API samples:
     - cat "1"  + "ירי רקטות וטילים"                     → "alert"
+    - cat "1"  + "חדירת כלי טיס עוין"                   → "uav"
+    - cat "1"  + "חדירת מחבלים"                          → "terrorist"
     - cat "10" + "בדקות הקרובות צפויות להתקבל התרעות"   → "pre_alert"
-    - cat "10" + "ניתן לצאת מהמרחב המוגן"               → "after_alert"
+    - cat "10" + clearance signals                       → "clear"
     """
     cat = str(alert_obj.get("cat", ""))
     title = alert_obj.get("title", "")
 
+    # Clearance signals → remove from map (check before cat "1" since
+    # "חדירת כלי טיס עוין - האירוע הסתיים" contains both keywords)
+    if "ניתן לצאת" in title or "להישאר בקרבת" in title or "הסתיים" in title or "החשש הוסר" in title:
+        return "clear"
+
     if cat == "1":
+        if "חדירת כלי טיס עוין" in title:
+            return "uav"
+        if "חדירת מחבלים" in title:
+            return "terrorist"
         return "alert"
 
-    # cat 10: clearance signals → remove from map
-    if "ניתן לצאת" in title or "להישאר בקרבת" in title or "הסתיים" in title:
-        return "clear"
     if "בדקות הקרובות" in title or "שהייה בסמיכות" in title or "לשפר את המיקום" in title:
         return "pre_alert"
 
@@ -194,7 +202,7 @@ def _classify_alert_object(alert_obj: dict) -> str:
 
 
 # Priority: higher number = takes precedence when merging
-_STATUS_PRIORITY = {"telegram_yellow": 0, "after_alert": 1, "pre_alert": 2, "alert": 3}
+_STATUS_PRIORITY = {"telegram_yellow": 0, "after_alert": 1, "pre_alert": 2, "alert": 3, "uav": 3, "terrorist": 3}
 
 
 def fetch_oref() -> list[tuple[str, str]]:
@@ -406,7 +414,7 @@ def update_state(
     for city_he, cs in list(state.items()):
         elapsed = now - cs.started_at
         
-        if cs.state == "alert" and elapsed >= ALERT_DURATION:
+        if cs.state in ("alert", "uav", "terrorist") and elapsed >= ALERT_DURATION:
             # Alert expired → after_alert (shelter)
             cs.state = "after_alert"
             cs.started_at = now
@@ -465,13 +473,13 @@ def update_state(
             
             # Only upgrade state (higher priority), never downgrade via incoming signal
             # Exception: after_alert can be re-promoted to alert
-            if new_priority > old_priority or (old_state == "after_alert" and alert_type == "alert"):
+            if new_priority > old_priority or (old_state == "after_alert" and alert_type in ("alert", "uav", "terrorist")):
                 log.info("🔄 %s → %s: %s", old_state, alert_type, city_he)
                 cs.state = alert_type
                 cs.started_at = now
-                cs.is_double = (old_state in ("alert", "after_alert") and alert_type == "alert")
+                cs.is_double = (old_state in ("alert", "uav", "terrorist", "after_alert") and alert_type in ("alert", "uav", "terrorist"))
                 changed = True
-            elif old_state == alert_type and alert_type in ("alert", "pre_alert"):
+            elif old_state == alert_type and alert_type in ("alert", "uav", "terrorist", "pre_alert"):
                 # Same state from Oref — refresh timer only for active oref states
                 if city_he in oref_cities:
                     cs.started_at = now
@@ -487,7 +495,7 @@ def update_state(
             cs.state = alert_type
             state[city_he] = cs
             
-            emoji = {"telegram_yellow": "🟡", "pre_alert": "🟠", "alert": "🔴", "after_alert": "⚫"}.get(alert_type, "❓")
+            emoji = {"telegram_yellow": "🟡", "pre_alert": "🟠", "alert": "🔴", "uav": "🟣", "terrorist": "🔶", "after_alert": "⚫"}.get(alert_type, "❓")
             log.info("%s NEW %s: %s (%s)", emoji, alert_type.upper(), city_he, poly_data["city_name"])
             changed = True
     

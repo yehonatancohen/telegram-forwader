@@ -20,7 +20,7 @@ FIREBASE_NODE = "/public_state/active_alerts"
 SERVICE_ACCOUNT = Path(__file__).parent / "serviceAccountKey.json"
 POLYGONS_FILE = Path(__file__).parent / "polygons.json"
 
-STATUSES = ["alert", "pre_alert", "after_alert", "telegram_yellow"]
+STATUSES = ["alert", "pre_alert", "after_alert", "telegram_yellow", "uav", "terrorist"]
 
 
 def _sanitize_fb_key(key: str) -> str:
