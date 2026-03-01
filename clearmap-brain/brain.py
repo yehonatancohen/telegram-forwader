@@ -12,7 +12,7 @@ Timings:
   telegram_yellow: 2 min max, or until pre_alert arrives
   pre_alert:       12 min max, or until alert arrives
   alert:           1.5 min, then auto-transitions to after_alert
-  after_alert:     10 min (shelter TTL), then removed
+  after_alert:     persists until Oref clearance ("הסתיים"/"ניתן לצאת")
 """
 
 import json
@@ -51,7 +51,7 @@ REQUEST_TIMEOUT = 5        # HTTP timeout in seconds
 TELEGRAM_YELLOW_TTL = 120   # 2 minutes
 PRE_ALERT_TTL = 720         # 12 minutes
 ALERT_DURATION = 90         # 1.5 minutes → then after_alert
-AFTER_ALERT_TTL = 600       # 10 minutes (shelter)
+AFTER_ALERT_SAFETY_TTL = 86400  # 24h safety net (cleared by Oref signal normally)
 
 POLYGONS_FILE = Path(os.environ.get("POLYGONS_FILE", Path(__file__).parent / "polygons.json"))
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("SERVICE_ACCOUNT_FILE", Path(__file__).parent / "serviceAccountKey.json"))
@@ -295,17 +295,27 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
     Returns a list of (city_name_he, "telegram_yellow") tuples.
     """
     if not TELEGRAM_DB_PATH.exists():
+        log.debug("Telegram DB not found: %s", TELEGRAM_DB_PATH)
         return []
-    
+
     cities: set[str] = set()
     try:
         conn = sqlite3.connect(str(TELEGRAM_DB_PATH), timeout=2)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        
+
         now = time.time()
         two_min_ago = now - TELEGRAM_YELLOW_TTL
-        
+
+        # ── Diagnostic: check what's in the DB ──
+        cur.execute("SELECT COUNT(*) FROM event_sources WHERE reported_at >= ?", (two_min_ago,))
+        recent_total = cur.fetchone()[0]
+        cur.execute("SELECT DISTINCT LOWER(channel) FROM event_sources ORDER BY ROWID DESC LIMIT 20")
+        db_channels = [r[0] for r in cur.fetchall()]
+        if recent_total > 0 or db_channels:
+            log.info("Intel DB: %d msgs in last %ds | channels in DB: %s | watching: %s",
+                     recent_total, TELEGRAM_YELLOW_TTL, db_channels, INTEL_CHANNELS)
+
         # Read raw messages from intel channels in the last 2 minutes
         cur.execute("""
             SELECT es.raw_text, es.channel, es.reported_at
@@ -314,8 +324,12 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
               AND LOWER(es.channel) IN ({})
             ORDER BY es.reported_at DESC
         """.format(",".join(f"'{c}'" for c in INTEL_CHANNELS)), (two_min_ago,))
-        
-        for row in cur.fetchall():
+
+        rows = cur.fetchall()
+        if rows:
+            log.info("Intel DB: %d matching messages from watched channels", len(rows))
+
+        for row in rows:
             raw = row["raw_text"] or ""
             if not raw:
                 continue
@@ -381,7 +395,7 @@ def update_state(
     - telegram_yellow: 2 min timeout, or upgraded to pre_alert/alert
     - pre_alert:       12 min timeout, or upgraded to alert
     - alert:           1.5 min duration, then auto → after_alert
-    - after_alert:     10 min shelter TTL, then removed. Re-alertable (→ alert)
+    - after_alert:     persists until Oref "clear" signal. Re-alertable (→ alert)
     
     Priority: alert > pre_alert > after_alert > telegram_yellow
     """
@@ -411,9 +425,9 @@ def update_state(
             del state[city_he]
             changed = True
         
-        elif cs.state == "after_alert" and elapsed >= AFTER_ALERT_TTL:
-            # Shelter time expired → remove
-            log.info("✅ CLEARED: %s (shelter expired)", city_he)
+        elif cs.state == "after_alert" and elapsed >= AFTER_ALERT_SAFETY_TTL:
+            # 24h safety net — normally cleared by Oref "הסתיים" signal
+            log.warning("⚠️ SAFETY CLEANUP: %s after_alert for 24h without clearance", city_he)
             del state[city_he]
             changed = True
     
@@ -529,8 +543,8 @@ def main():
     # Clear any stale data on startup
     sync_to_firebase(state)
 
-    log.info("Polling Oref every %.1fs | alert=%ds pre_alert=%ds after_alert=%ds telegram=%ds",
-             POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, AFTER_ALERT_TTL, TELEGRAM_YELLOW_TTL)
+    log.info("Polling Oref every %.1fs | alert=%ds pre_alert=%ds after_alert=until_clear telegram=%ds",
+             POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, TELEGRAM_YELLOW_TTL)
 
     while True:
         try:
