@@ -340,7 +340,7 @@ def _classify_alert_object(alert_obj: dict) -> str:
 
     Based on real API samples:
     - cat "1"  + "ירי רקטות וטילים"                     → "alert"
-    - cat "1"  + "חדירת כלי טיס עוין"                   → "uav"
+    - cat "6"  + "חדירת כלי טיס עוין"                   → "uav"
     - cat "1"  + "חדירת מחבלים"                          → "terrorist"
     - cat "10" + "בדקות הקרובות צפויות להתקבל התרעות"   → "pre_alert"
     - cat "10" + clearance signals                       → "clear"
@@ -348,16 +348,18 @@ def _classify_alert_object(alert_obj: dict) -> str:
     cat = str(alert_obj.get("cat", ""))
     title = alert_obj.get("title", "")
 
-    # Clearance signals → remove from map (check before cat "1" since
+    # Clearance signals → remove from map (check before other checks since
     # "חדירת כלי טיס עוין - האירוע הסתיים" contains both keywords)
     if "ניתן לצאת" in title or "להישאר בקרבת" in title or "הסתיים" in title or "החשש הוסר" in title:
         return "clear"
 
-    if cat == "1":
-        if "חדירת כלי טיס עוין" in title:
-            return "uav"
-        if "חדירת מחבלים" in title:
-            return "terrorist"
+    # Title-based detection (works regardless of cat value)
+    if "חדירת כלי טיס עוין" in title:
+        return "uav"
+    if "חדירת מחבלים" in title:
+        return "terrorist"
+
+    if cat in ("1", "6"):
         return "alert"
 
     if "בדקות הקרובות" in title or "שהייה בסמיכות" in title or "לשפר את המיקום" in title:
