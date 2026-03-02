@@ -21,10 +21,9 @@ Commands:
 
 from __future__ import annotations
 
-import asyncio, logging, os, re, time, uuid
+import asyncio, logging, os, re, sqlite3, time, uuid
 from pathlib import Path
 
-import aiosqlite
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
 
@@ -304,20 +303,22 @@ class SessionManager:
 
             try:
                 db_path = str(config.DB_PATH)
-                async with aiosqlite.connect(db_path) as db:
-                    await db.execute(
-                        "INSERT OR IGNORE INTO events "
-                        "(event_id, signature_json, first_seen, last_updated) "
-                        "VALUES (?, '{}', ?, ?)",
-                        (event_id, now, now),
-                    )
-                    await db.execute(
-                        "INSERT INTO event_sources "
-                        "(event_id, channel, reported_at, raw_text) "
-                        "VALUES (?, ?, ?, ?)",
-                        (event_id, channel, now, text),
-                    )
-                    await db.commit()
+                conn = sqlite3.connect(db_path, timeout=5)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(
+                    "INSERT OR IGNORE INTO events "
+                    "(event_id, signature_json, first_seen, last_updated) "
+                    "VALUES (?, '{}', ?, ?)",
+                    (event_id, now, now),
+                )
+                conn.execute(
+                    "INSERT INTO event_sources "
+                    "(event_id, channel, reported_at, raw_text) "
+                    "VALUES (?, ?, ?, ?)",
+                    (event_id, channel, now, text),
+                )
+                conn.commit()
+                conn.close()
 
                 await event.respond(
                     f"🧪 Injected as @{channel}:\n`{text}`",
