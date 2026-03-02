@@ -16,13 +16,15 @@ Commands:
     /remove <username> — remove a channel from any list
     /stats    — show pipeline statistics
     /restart  — restart the bot (picks up new channels)
+    /test <msg> — inject a test intel message into intel.db
 """
 
 from __future__ import annotations
 
-import asyncio, logging, os, re
+import asyncio, logging, os, re, time, uuid
 from pathlib import Path
 
+import aiosqlite
 from telethon import TelegramClient, events, errors
 from telethon.sessions import StringSession
 
@@ -147,7 +149,9 @@ class SessionManager:
                 "/add\\_smart `<link or username>` — add smart source\n"
                 "/remove `<username>` — remove from any list\n\n"
                 "**Info:**\n"
-                "/stats — pipeline statistics",
+                "/stats — pipeline statistics\n\n"
+                "**Testing:**\n"
+                "/test `<message>` — inject intel message for brain.py",
                 parse_mode="md",
             )
 
@@ -273,6 +277,56 @@ class SessionManager:
                 )
             else:
                 await event.respond("📊 Stats not available (pipeline not started).")
+
+        # ─── Test intel injection ─────────────────────────────────────────
+        @self.bot.on(events.NewMessage(pattern=r"/test(?:\s+(.+))?"))
+        async def test_inject_handler(event):
+            if not self._is_admin(event.sender_id):
+                return
+            text = (event.pattern_match.group(1) or "").strip()
+            if not text:
+                await event.respond(
+                    "🧪 **Inject test intel message**\n\n"
+                    "Usage: `/test <message text>`\n\n"
+                    "Examples:\n"
+                    "`/test שיגורים לעבר צפון`\n"
+                    "`/test יציאות מעזה לעבר נגב`\n"
+                    "`/test ניתן לצאת מהמרחב המוגן`\n\n"
+                    "Message will be injected as @beforeredalert\n"
+                    "brain.py picks it up on next poll (~1.5s).",
+                    parse_mode="md",
+                )
+                return
+
+            channel = "beforeredalert"
+            event_id = str(uuid.uuid4())
+            now = time.time()
+
+            try:
+                db_path = str(config.DB_PATH)
+                async with aiosqlite.connect(db_path) as db:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO events "
+                        "(event_id, signature_json, first_seen, last_updated) "
+                        "VALUES (?, '{}', ?, ?)",
+                        (event_id, now, now),
+                    )
+                    await db.execute(
+                        "INSERT INTO event_sources "
+                        "(event_id, channel, reported_at, raw_text) "
+                        "VALUES (?, ?, ?, ?)",
+                        (event_id, channel, now, text),
+                    )
+                    await db.commit()
+
+                await event.respond(
+                    f"🧪 Injected as @{channel}:\n`{text}`",
+                    parse_mode="md",
+                )
+                logger.info("admin injected test intel: [%s] %s", channel, text)
+            except Exception as e:
+                logger.exception("test inject failed")
+                await event.respond(f"❌ Inject failed: `{e}`")
 
         # ─── Restart ─────────────────────────────────────────────────────
         @self.bot.on(events.NewMessage(pattern="/restart"))
