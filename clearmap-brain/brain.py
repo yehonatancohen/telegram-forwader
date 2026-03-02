@@ -17,6 +17,7 @@ Timings:
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -138,6 +139,171 @@ class CityState:
             "is_double": self.is_double,
             "status": self.state,
         }
+
+
+# ── Geo Helpers ────────────────────────────────────────────────────────────
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two points in km."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial bearing from point 1 to point 2, in degrees [0, 360)."""
+    dlon = math.radians(lon2 - lon1)
+    la1, la2 = math.radians(lat1), math.radians(lat2)
+    x = math.sin(dlon) * math.cos(la2)
+    y = math.cos(la1) * math.sin(la2) - math.sin(la1) * math.cos(la2) * math.cos(dlon)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def _project_point(lat: float, lon: float, bearing_deg: float, dist_km: float) -> tuple[float, float]:
+    """Project a point along a bearing by a distance. Returns (lat, lon)."""
+    R = 6371.0
+    d = dist_km / R
+    brng = math.radians(bearing_deg)
+    lat1 = math.radians(lat)
+    lon1 = math.radians(lon)
+    lat2 = math.asin(math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(brng))
+    lon2 = lon1 + math.atan2(math.sin(brng) * math.sin(d) * math.cos(lat1),
+                              math.cos(d) - math.sin(lat1) * math.sin(lat2))
+    return (math.degrees(lat2), math.degrees(lon2))
+
+
+def _compute_centroid(polygon_coords: list) -> tuple[float, float]:
+    """Average of all boundary points → (lat, lng)."""
+    n = len(polygon_coords)
+    if n == 0:
+        return (0.0, 0.0)
+    lat_sum = sum(p[0] for p in polygon_coords)
+    lng_sum = sum(p[1] for p in polygon_coords)
+    return (lat_sum / n, lng_sum / n)
+
+
+# ── UAV Flight Path Tracker ───────────────────────────────────────────────
+
+
+class UavTrack:
+    """A single tracked UAV flight path."""
+
+    __slots__ = ("track_id", "points", "cities", "last_updated")
+
+    def __init__(self, track_id: str, lat: float, lng: float, timestamp: float, city: str):
+        self.track_id = track_id
+        self.points: list[tuple[float, float, float]] = [(lat, lng, timestamp)]
+        self.cities: set[str] = {city}
+        self.last_updated = timestamp
+
+
+class UavTracker:
+    """Clusters UAV alerts into tracks and predicts flight paths."""
+
+    CLUSTER_DISTANCE_KM = 50.0
+    STALE_SECONDS = 300.0
+    PREDICT_SECONDS = [30, 60]
+
+    def __init__(self):
+        self.tracks: dict[str, UavTrack] = {}
+        self._next_id = 0
+
+    def update(self, uav_cities: set[str], centroids: dict[str, tuple[float, float]], now: float) -> bool:
+        """Process current UAV-alerted cities. Returns True if tracks changed."""
+        changed = self._cleanup_stale(now)
+
+        for city in uav_cities:
+            if city not in centroids:
+                continue
+            # Skip if city already tracked
+            if any(city in t.cities for t in self.tracks.values()):
+                continue
+
+            lat, lng = centroids[city]
+
+            # Find closest track
+            best_track = None
+            best_dist = self.CLUSTER_DISTANCE_KM
+            for track in self.tracks.values():
+                last_pt = track.points[-1]
+                dist = _haversine_km(lat, lng, last_pt[0], last_pt[1])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_track = track
+
+            if best_track:
+                best_track.points.append((lat, lng, now))
+                best_track.cities.add(city)
+                best_track.last_updated = now
+            else:
+                tid = f"uav_{self._next_id}"
+                self._next_id += 1
+                self.tracks[tid] = UavTrack(tid, lat, lng, now, city)
+
+            changed = True
+
+        return changed
+
+    def _cleanup_stale(self, now: float) -> bool:
+        stale = [tid for tid, t in self.tracks.items() if now - t.last_updated > self.STALE_SECONDS]
+        for tid in stale:
+            del self.tracks[tid]
+        return len(stale) > 0
+
+    def to_firebase(self) -> dict:
+        """Serialize all tracks for the frontend."""
+        result = {}
+        for tid, track in self.tracks.items():
+            observed = [[p[0], p[1]] for p in track.points]
+            predicted = []
+            heading = 0.0
+            speed = 0.0
+
+            if len(track.points) >= 2:
+                # Weighted average bearing from last 3 segments
+                recent = track.points[-4:]  # up to last 4 points → 3 segments
+                bearings = []
+                weights = []
+                for i in range(len(recent) - 1):
+                    b = _bearing(recent[i][0], recent[i][1], recent[i + 1][0], recent[i + 1][1])
+                    bearings.append(b)
+                    weights.append(i + 1)
+
+                # Weighted circular mean (handle wrap-around)
+                sin_sum = sum(w * math.sin(math.radians(b)) for w, b in zip(weights, bearings))
+                cos_sum = sum(w * math.cos(math.radians(b)) for w, b in zip(weights, bearings))
+                heading = (math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360
+
+                # Speed from last 2 points
+                p1, p2 = track.points[-2], track.points[-1]
+                dist = _haversine_km(p1[0], p1[1], p2[0], p2[1])
+                dt = p2[2] - p1[2]
+                speed = (dist / dt) * 3600 if dt > 0 else 0  # km/h
+
+                # Project prediction points
+                last = track.points[-1]
+                for secs in self.PREDICT_SECONDS:
+                    pred_dist = (speed / 3600) * secs  # km
+                    if pred_dist > 0:
+                        plat, plng = _project_point(last[0], last[1], heading, pred_dist)
+                        predicted.append([plat, plng])
+
+            result[tid] = {
+                "track_id": tid,
+                "observed": observed,
+                "predicted": predicted,
+                "heading_deg": round(heading, 1),
+                "speed_kmh": round(speed, 0),
+                "last_updated": int(track.last_updated * 1000),
+            }
+
+        return result
+
+
+FIREBASE_UAV_NODE = "/public_state/uav_tracks"
 
 
 # ── Polygon Lookup ──────────────────────────────────────────────────────────
@@ -488,6 +654,15 @@ def sync_to_firebase(state: dict[str, CityState]):
     log.info("Firebase synced: %d alerts.", len(payload))
 
 
+def sync_uav_tracks(tracker: UavTracker):
+    """Push UAV flight path tracks to Firebase."""
+    uav_ref = db.reference(FIREBASE_UAV_NODE)
+    payload = tracker.to_firebase()
+    uav_ref.set(payload if payload else {})
+    if payload:
+        log.info("Firebase UAV tracks synced: %d tracks.", len(payload))
+
+
 # ── Main Loop ───────────────────────────────────────────────────────────────
 
 
@@ -502,9 +677,12 @@ def main():
     init_firebase()
 
     state: dict[str, CityState] = {}
+    centroids = {name: _compute_centroid(p["polygon"]) for name, p in polygons.items() if p.get("polygon")}
+    uav_tracker = UavTracker()
 
     # Clear any stale data on startup
     sync_to_firebase(state)
+    sync_uav_tracks(uav_tracker)
 
     log.info("Polling Oref every %.1fs | alert=%ds pre_alert=%ds after_alert=until_clear telegram=%ds",
              POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, TELEGRAM_YELLOW_TTL)
@@ -515,8 +693,12 @@ def main():
             telegram_data = fetch_telegram_alerts(polygons)
             changed = update_state(state, oref_data, telegram_data, polygons)
 
-            if changed:
+            uav_cities = {c for c, cs in state.items() if cs.state == "uav"}
+            tracks_changed = uav_tracker.update(uav_cities, centroids, time.time())
+
+            if changed or tracks_changed:
                 sync_to_firebase(state)
+                sync_uav_tracks(uav_tracker)
 
         except requests.exceptions.RequestException as e:
             log.error("HTTP error: %s", e)

@@ -250,6 +250,69 @@ def cmd_telegram_show():
         print(f"{channel:<20} {age:>4}s  {msg}")
 
 
+FIREBASE_UAV_NODE = "/public_state/uav_tracks"
+
+# Cities along a north-south corridor (western Galilee → coast)
+# Simulates a UAV entering from Lebanon heading south
+UAV_FLIGHT_PRESETS = {
+    "Lebanon → Western Galilee (south)": [
+        "ראש הנקרה", "שלומי", "מצובה", "גשר הזיו", "נהריה", "עכו",
+    ],
+    "Lebanon → Central Galilee": [
+        "זרעית", "שומרה", "אבן מנחם", "גורנות הגליל", "מעלות תרשיחא",
+    ],
+}
+
+
+def cmd_simulate_uav(polygons: dict):
+    """Simulate a UAV flight path by firing sequential UAV alerts."""
+    print("\nUAV flight path presets:")
+    preset_names = list(UAV_FLIGHT_PRESETS.keys())
+    for i, name in enumerate(preset_names):
+        cities = UAV_FLIGHT_PRESETS[name]
+        print(f"  {i}: {name} ({len(cities)} cities)")
+
+    try:
+        idx = int(input("Pick preset: ").strip())
+        preset_name = preset_names[idx]
+    except (ValueError, IndexError):
+        print("Invalid selection.")
+        return
+
+    cities = UAV_FLIGHT_PRESETS[preset_name]
+    # Filter to cities that exist in polygons
+    valid = [c for c in cities if c in polygons]
+    if not valid:
+        print("No valid cities in preset!")
+        return
+
+    delay = input("Delay between alerts in seconds (default 3): ").strip()
+    delay = float(delay) if delay else 3.0
+
+    print(f"\nSimulating UAV flight: {len(valid)} cities, {delay}s apart")
+    print("Cities:", " → ".join(valid))
+    print("Starting in 2 seconds...\n")
+    time.sleep(2)
+
+    ref = db.reference(FIREBASE_NODE)
+    for i, city_he in enumerate(valid):
+        payload = _make_payload(city_he, polygons[city_he]["city_name"], "uav")
+        key = _sanitize_fb_key(city_he)
+        ref.child(key).set(payload)
+        print(f"  [{i+1}/{len(valid)}] UAV alert: {city_he}")
+        if i < len(valid) - 1:
+            time.sleep(delay)
+
+    print(f"\nDone! {len(valid)} UAV alerts fired. Check the map for flight path.")
+    print("Tracks will appear at /public_state/uav_tracks once brain.py processes them.")
+
+
+def cmd_clear_uav_tracks():
+    """Clear all UAV flight path tracks from Firebase."""
+    db.reference(FIREBASE_UAV_NODE).set({})
+    print("UAV tracks cleared.")
+
+
 def main():
     # Load polygons
     with open(POLYGONS_FILE, encoding="utf-8") as f:
@@ -264,8 +327,9 @@ def main():
     print("NOTE: For telegram testing (7/8), both containers must be RUNNING.\n")
 
     while True:
-        print("\n1) Add alert   2) Batch alert   3) Clear one   4) Clear all")
-        print("5) Show active 6) Exit          7) Inject telegram msg  8) Show intel DB")
+        print("\n1) Add alert    2) Batch alert     3) Clear one    4) Clear all")
+        print("5) Show active  6) Exit            7) Inject telegram msg")
+        print("8) Show intel   9) Simulate UAV   10) Clear UAV tracks")
         choice = input("> ").strip()
 
         if choice == "1":
@@ -284,6 +348,10 @@ def main():
             cmd_telegram_inject()
         elif choice == "8":
             cmd_telegram_show()
+        elif choice == "9":
+            cmd_simulate_uav(polygons)
+        elif choice == "10":
+            cmd_clear_uav_tracks()
         else:
             print("Invalid choice.")
 
