@@ -303,7 +303,6 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
     Returns a list of (city_name_he, "telegram_yellow") tuples.
     """
     if not TELEGRAM_DB_PATH.exists():
-        log.debug("Telegram DB not found: %s", TELEGRAM_DB_PATH)
         return []
 
     cities: set[str] = set()
@@ -315,75 +314,31 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
         now = time.time()
         two_min_ago = now - TELEGRAM_YELLOW_TTL
 
-        # ── Diagnostic: check what's in the DB ──
-        cur.execute("SELECT COUNT(*) FROM event_sources WHERE reported_at >= ?", (two_min_ago,))
-        recent_total = cur.fetchone()[0]
-        cur.execute("SELECT DISTINCT LOWER(channel) FROM event_sources ORDER BY ROWID DESC LIMIT 20")
-        db_channels = [r[0] for r in cur.fetchall()]
-        if recent_total > 0 or db_channels:
-            log.info("Intel DB: %d msgs in last %ds | channels in DB: %s | watching: %s",
-                     recent_total, TELEGRAM_YELLOW_TTL, db_channels, INTEL_CHANNELS)
-
-        # Read raw messages from intel channels in the last 2 minutes
         cur.execute("""
-            SELECT es.raw_text, es.channel, es.reported_at
+            SELECT es.raw_text, es.channel
             FROM event_sources es
             WHERE es.reported_at >= ?
               AND LOWER(es.channel) IN ({})
             ORDER BY es.reported_at DESC
         """.format(",".join(f"'{c}'" for c in INTEL_CHANNELS)), (two_min_ago,))
 
-        rows = cur.fetchall()
-        if rows:
-            log.info("Intel DB: %d matching messages from watched channels", len(rows))
-
-        for row in rows:
+        for row in cur.fetchall():
             raw = row["raw_text"] or ""
             if not raw:
                 continue
-            
-            # Skip "all clear" / "leave shelter" messages
+
             if any(ck in raw for ck in INTEL_CANCEL_KEYWORDS):
-                log.debug("Skipping cancel/all-clear message from @%s", row["channel"])
                 continue
 
-            # Check if message contains alert keywords
-            has_keyword = any(kw in raw for kw in INTEL_KEYWORDS)
-            if has_keyword:
+            if any(kw in raw for kw in INTEL_KEYWORDS):
                 extracted = _extract_locations_from_text(raw, polygons)
                 if extracted:
                     cities.update(extracted)
-                    log.debug("Telegram intel from @%s: found %d locations", row["channel"], len(extracted))
-        
-        # Also check event signatures for broader location info
-        cur.execute("""
-            SELECT e.signature_json
-            FROM events e
-            JOIN event_sources es ON e.event_id = es.event_id
-            WHERE es.reported_at >= ?
-              AND LOWER(es.channel) IN ({})
-        """.format(",".join(f"'{c}'" for c in INTEL_CHANNELS)), (two_min_ago,))
-        
-        for row in cur.fetchall():
-            try:
-                sig = json.loads(row["signature_json"])
-                region = sig.get("region")
-                location = sig.get("location")
-                
-                if region:
-                    for keyword, mapped_region in REGION_KEYWORDS.items():
-                        if keyword in region:
-                            cities.update(_resolve_region(mapped_region))
-                            break
-                if location and location in polygons:
-                    cities.add(location)
-            except Exception:
-                pass
-        
+
         conn.close()
     except Exception as e:
         log.error("Telegram DB error: %s", e)
-    
+
     return [(c, "telegram_yellow") for c in cities]
 
 
