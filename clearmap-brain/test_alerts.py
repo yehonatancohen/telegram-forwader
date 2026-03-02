@@ -8,6 +8,7 @@ Usage:
 """
 
 import json
+import math
 import re
 import subprocess
 import time
@@ -264,8 +265,86 @@ UAV_FLIGHT_PRESETS = {
 }
 
 
+def _centroid(polygon_coords: list) -> tuple[float, float]:
+    """Average of boundary points → (lat, lng)."""
+    n = len(polygon_coords)
+    if n == 0:
+        return (0.0, 0.0)
+    return (sum(p[0] for p in polygon_coords) / n, sum(p[1] for p in polygon_coords) / n)
+
+
+def _bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    dlon = math.radians(lon2 - lon1)
+    la1, la2 = math.radians(lat1), math.radians(lat2)
+    x = math.sin(dlon) * math.cos(la2)
+    y = math.cos(la1) * math.sin(la2) - math.sin(la1) * math.cos(la2) * math.cos(dlon)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _project_point(lat: float, lon: float, bearing_deg: float, dist_km: float) -> tuple[float, float]:
+    R = 6371.0
+    d = dist_km / R
+    brng = math.radians(bearing_deg)
+    lat1 = math.radians(lat)
+    lon1 = math.radians(lon)
+    lat2 = math.asin(math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(brng))
+    lon2 = lon1 + math.atan2(math.sin(brng) * math.sin(d) * math.cos(lat1),
+                              math.cos(d) - math.sin(lat1) * math.sin(lat2))
+    return (math.degrees(lat2), math.degrees(lon2))
+
+
+def _build_uav_track(track_id: str, points: list[tuple[float, float, float]]) -> dict:
+    """Build a UAV track payload from a list of (lat, lng, timestamp) points."""
+    observed = [[p[0], p[1]] for p in points]
+    predicted = []
+    heading = 0.0
+    speed = 0.0
+
+    if len(points) >= 2:
+        recent = points[-4:]
+        bearings = []
+        weights = []
+        for i in range(len(recent) - 1):
+            b = _bearing(recent[i][0], recent[i][1], recent[i + 1][0], recent[i + 1][1])
+            bearings.append(b)
+            weights.append(i + 1)
+
+        sin_sum = sum(w * math.sin(math.radians(b)) for w, b in zip(weights, bearings))
+        cos_sum = sum(w * math.cos(math.radians(b)) for w, b in zip(weights, bearings))
+        heading = (math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360
+
+        p1, p2 = points[-2], points[-1]
+        dist = _haversine_km(p1[0], p1[1], p2[0], p2[1])
+        dt = p2[2] - p1[2]
+        speed = (dist / dt) * 3600 if dt > 0 else 0
+
+        last = points[-1]
+        for secs in [30, 60]:
+            pred_dist = (speed / 3600) * secs
+            if pred_dist > 0:
+                plat, plng = _project_point(last[0], last[1], heading, pred_dist)
+                predicted.append([plat, plng])
+
+    return {
+        "track_id": track_id,
+        "observed": observed,
+        "predicted": predicted,
+        "heading_deg": round(heading, 1),
+        "speed_kmh": round(speed, 0),
+        "last_updated": int(points[-1][2] * 1000),
+    }
+
+
 def cmd_simulate_uav(polygons: dict):
-    """Simulate a UAV flight path by firing sequential UAV alerts."""
+    """Simulate a UAV flight path — writes directly to uav_tracks (no brain.py needed)."""
     print("\nUAV flight path presets:")
     preset_names = list(UAV_FLIGHT_PRESETS.keys())
     for i, name in enumerate(preset_names):
@@ -280,8 +359,7 @@ def cmd_simulate_uav(polygons: dict):
         return
 
     cities = UAV_FLIGHT_PRESETS[preset_name]
-    # Filter to cities that exist in polygons
-    valid = [c for c in cities if c in polygons]
+    valid = [c for c in cities if c in polygons and polygons[c].get("polygon")]
     if not valid:
         print("No valid cities in preset!")
         return
@@ -294,17 +372,33 @@ def cmd_simulate_uav(polygons: dict):
     print("Starting in 2 seconds...\n")
     time.sleep(2)
 
-    ref = db.reference(FIREBASE_NODE)
+    alert_ref = db.reference(FIREBASE_NODE)
+    uav_ref = db.reference(FIREBASE_UAV_NODE)
+    track_id = "uav_test_0"
+    points: list[tuple[float, float, float]] = []
+
     for i, city_he in enumerate(valid):
+        # Write the alert polygon
         payload = _make_payload(city_he, polygons[city_he]["city_name"], "uav")
         key = _sanitize_fb_key(city_he)
-        ref.child(key).set(payload)
-        print(f"  [{i+1}/{len(valid)}] UAV alert: {city_he}")
+        alert_ref.child(key).set(payload)
+
+        # Compute centroid and add to track
+        lat, lng = _centroid(polygons[city_he]["polygon"])
+        now = time.time()
+        points.append((lat, lng, now))
+
+        # Build and push track data
+        track_payload = _build_uav_track(track_id, points)
+        uav_ref.set({track_id: track_payload})
+
+        print(f"  [{i+1}/{len(valid)}] UAV alert: {city_he}  →  track updated ({len(points)} pts)")
+
         if i < len(valid) - 1:
             time.sleep(delay)
 
-    print(f"\nDone! {len(valid)} UAV alerts fired. Check the map for flight path.")
-    print("Tracks will appear at /public_state/uav_tracks once brain.py processes them.")
+    print(f"\nDone! {len(valid)} UAV alerts + track written directly to Firebase.")
+    print("Check the map — drone should be visible now.")
 
 
 def cmd_clear_uav_tracks():
