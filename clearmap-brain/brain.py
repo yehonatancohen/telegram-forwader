@@ -230,7 +230,7 @@ class UavTrack:
     """A single tracked UAV flight path."""
 
     __slots__ = ("track_id", "raw_centroids", "smoothed_points", "cities",
-                 "last_updated", "heading", "speed_estimate")
+                 "last_updated", "heading", "speed_estimate", "origin_type")
 
     def __init__(self, track_id: str, lat: float, lng: float, timestamp: float, city: str):
         self.track_id = track_id
@@ -240,6 +240,7 @@ class UavTrack:
         self.last_updated = timestamp
         self.heading: float = 0.0
         self.speed_estimate: float = UAV_DEFAULT_SPEED_KMH
+        self.origin_type: str = "לא ידוע"
 
 
 class UavTracker:
@@ -250,8 +251,8 @@ class UavTracker:
     the alert areas and places observations along it.
     """
 
-    CLUSTER_LATERAL_KM = 40.0   # max perpendicular distance from track line
-    CLUSTER_FORWARD_KM = 150.0  # max forward distance from last smoothed point
+    CLUSTER_LATERAL_KM = 80.0   # max perpendicular distance from track line
+    CLUSTER_FORWARD_KM = 250.0  # max forward distance from last smoothed point
     STALE_SECONDS = 300.0
     PREDICT_SECONDS = [30, 60]
     SPEED_SMOOTHING = 0.3       # exponential smoothing alpha for speed updates
@@ -364,6 +365,15 @@ class UavTracker:
             # Second observation — establish heading from first to new centroid
             track.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
 
+            if first[0] > 32.5:
+                track.origin_type = "חיזבאללה (מלבנון)"
+            elif first[0] < 31.0 or (first[0] < 32.0 and track.heading > 300 and track.heading < 60):
+                track.origin_type = "החות'ים (מתימן)"
+            elif first[1] > 35.0 or (track.heading > 200 and track.heading < 340):
+                track.origin_type = "מיליציות (ממזרח / עיראק)"
+            else:
+                track.origin_type = "סיכול ממוקד / חמאס"
+
             # Project the raw centroid onto the heading line from the first point
             _, _, proj_dist = _project_onto_line(raw_lat, raw_lng, first[0], first[1], track.heading)
             proj_dist = max(proj_dist, 0.5)  # at least 0.5 km forward
@@ -428,6 +438,7 @@ class UavTracker:
                 "predicted": predicted,
                 "heading_deg": round(track.heading, 1),
                 "speed_kmh": round(track.speed_estimate, 0),
+                "origin_type": getattr(track, 'origin_type', "לא ידוע"),
                 "last_updated": int(track.last_updated * 1000),
             }
 
@@ -716,6 +727,14 @@ def update_state(
                 del state[city_he]
                 changed = True
             del incoming[city_he]
+
+    # ── Step 1c: Fast-drop UAVs immediately if Oref stopped tracking them ──
+    for city_he, cs in list(state.items()):
+        if cs.state == "uav" and city_he not in oref_cities:
+            log.info("👇 FAST DROP UAV: %s (Oref stopped alerting)", city_he)
+            cs.state = "after_alert"
+            cs.started_at = now
+            changed = True
 
     # ── Step 2: Process incoming signals ──────────────────────────────────
     for city_he, alert_type in incoming.items():
