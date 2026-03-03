@@ -86,10 +86,12 @@ class Pipeline:
 
     # ─── Aggregator loop (runs in background) ────────────────────────────
     async def aggregator_loop(self):
-        """Periodically check event pool for mature events."""
+        """Periodically check event pool for mature events and dispatch as a single digest."""
         while True:
             await asyncio.sleep(FLUSH_EVERY)
             now = time.time()
+            digest_events: list[tuple] = []  # (AggEvent, translated_summary)
+
             for eid, ev in list(self.pool.active.items()):
                 if now - ev.first_ts < EVENT_MERGE_WINDOW:
                     continue
@@ -98,14 +100,17 @@ class Pipeline:
                     continue
 
                 if len(ev.channels) >= MIN_SOURCES:
-                    await self._dispatch_trend(ev)
+                    summary = await self._translate_event(ev)
+                    digest_events.append((ev, summary))
                     await self.authority.on_event_corroborated(ev)
                     await self.db.mark_event_sent(eid)
                 elif len(ev.channels) == 1:
                     ch = next(iter(ev.channels))
                     score = self.authority.get_score(ch)
-                    if score >= 80:
-                        await self._dispatch_single(ev)
+                    # Stricter: single-source needs score >= 85 AND is_urgent
+                    if score >= 85 and ev.signature.is_urgent:
+                        summary = await self._translate_event(ev)
+                        digest_events.append((ev, summary))
                         await self.db.mark_event_sent(eid)
                     else:
                         await self.authority.on_event_expired_uncorroborated(ev)
@@ -114,23 +119,19 @@ class Pipeline:
                 ev.sent = True
                 self.pool.expire(eid)
 
-    async def _dispatch_trend(self, ev):
-        """Send a trend report with translated text."""
+            # Send all mature events as one digest message
+            if digest_events:
+                logger.info("[pipeline] flushing digest with %d events", len(digest_events))
+                await self.sender.send_digest(digest_events)
+
+    async def _translate_event(self, ev) -> str:
+        """Translate the longest event text to Hebrew for display."""
         text = max(ev.texts, key=len) if ev.texts else ""
         n = len(ev.channels)
         summary = await translate_to_hebrew(text[:500])
         if not summary:
             summary = f"דיווחים חוזרים ({n} ערוצים) על אירוע חריג."
-        logger.info("[pipeline] dispatching trend report (%d sources)", n)
-        await self.sender.send_trend_report(ev, summary)
-
-    async def _dispatch_single(self, ev):
-        """Send a single high-authority source alert with translated text."""
-        text = ev.texts[0][:500] if ev.texts else ""
-        summary = await translate_to_hebrew(text)
-        ch = next(iter(ev.channels))
-        logger.info("[pipeline] dispatching single-source alert (@%s)", ch)
-        await self.sender.send_single_source_alert(ev, summary)
+        return summary
 
     # ─── Periodic maintenance ─────────────────────────────────────────────
     async def decay_loop(self):

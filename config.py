@@ -64,8 +64,8 @@ LLM_RPM_LIMIT     = int(os.getenv("LLM_RPM_LIMIT", "28"))
 
 # ───── Correlation ───────────────────────────────────────────────────────
 SIGNATURE_MATCH_THRESHOLD = float(os.getenv("SIGNATURE_MATCH_THRESHOLD", "0.5"))
-EVENT_MERGE_WINDOW        = int(os.getenv("EVENT_MERGE_WINDOW", "600"))
-FLUSH_EVERY               = int(os.getenv("FLUSH_EVERY", "120"))
+EVENT_MERGE_WINDOW        = int(os.getenv("EVENT_MERGE_WINDOW", "120"))
+FLUSH_EVERY               = int(os.getenv("FLUSH_EVERY", "45"))
 MIN_SOURCES               = int(os.getenv("MIN_SOURCES", "2"))
 
 # ───── Authority ─────────────────────────────────────────────────────────

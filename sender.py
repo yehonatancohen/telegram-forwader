@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from hashlib import sha1
 from collections import deque
-from typing import Deque
+from typing import Deque, List
 
 from telethon import TelegramClient
 
@@ -131,6 +131,61 @@ class Sender:
             logger.info("[sender] single-source alert SENT (@%s, score=%.0f)", ch, score)
         except Exception as exc:
             logger.error("[sender] single-source send FAILED: %s", exc)
+
+    async def send_digest(self, events: List[tuple[AggEvent, str]]):
+        """Send a single consolidated digest containing multiple events.
+
+        events: list of (AggEvent, translated_summary) tuples.
+        """
+        if not events:
+            return
+
+        # Single event — use the normal per-event format
+        if len(events) == 1:
+            ev, summary = events[0]
+            if len(ev.channels) >= 2:
+                await self.send_trend_report(ev, summary)
+            else:
+                await self.send_single_source_alert(ev, summary)
+            return
+
+        sections = [f"🔔 עדכון מודיעין ({len(events)} אירועים)"]
+
+        for ev, summary in events:
+            n = len(ev.channels)
+            scores = [self.authority.get_score(c) for c in ev.channels]
+            avg_score = sum(scores) / len(scores) if scores else 50
+            badge = _reliability_badge(avg_score)
+            src_badge = _source_badge(n)
+
+            # Source line
+            if ev.links:
+                src_line = f"📡 {n} מקורות | " + " ".join(
+                    f"🔗 {lnk}" for lnk in ev.links[:3]
+                )
+            else:
+                srcs = ", ".join(f"@{c}" for c in sorted(ev.channels) if c)
+                src_line = f"📡 {srcs}"
+
+            sections.append("━━━━━━━━━━━━━━━━━━━━")
+            sections.append(f"{badge} {src_badge} | {ev.signature.event_type}")
+            sections.append(summary)
+            sections.append(src_line)
+
+        sections.append("━━━━━━━━━━━━━━━━━━━━")
+        sections.append(f"📢 הצטרפו לערוץ הדיווחים: {BOT_GROUP_LINK}")
+
+        report = "\n".join(sections)
+
+        if _is_sent(report):
+            return
+
+        try:
+            await self.client.send_message(self.output_chat, report,
+                                           link_preview=False)
+            logger.info("[sender] digest SENT (%d events)", len(events))
+        except Exception as exc:
+            logger.error("[sender] digest send FAILED: %s", exc)
 
     async def send_batch_summary(self, summary: str):
         """Send a batch intel digest."""

@@ -273,6 +273,7 @@ async def init_listeners(
                             await _arab(m)
                         else:
                             await smart_map[cli](m)
+                        await asyncio.sleep(0.5)
                     await asyncio.sleep(pacing)
             except asyncio.CancelledError:
                 raise
