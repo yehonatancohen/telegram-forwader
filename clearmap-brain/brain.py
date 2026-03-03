@@ -250,8 +250,8 @@ class UavTracker:
     the alert areas and places observations along it.
     """
 
-    CLUSTER_LATERAL_KM = 25.0   # max perpendicular distance from track line
-    CLUSTER_FORWARD_KM = 80.0   # max forward distance from last smoothed point
+    CLUSTER_LATERAL_KM = 40.0   # max perpendicular distance from track line
+    CLUSTER_FORWARD_KM = 150.0  # max forward distance from last smoothed point
     STALE_SECONDS = 300.0
     PREDICT_SECONDS = [30, 60]
     SPEED_SMOOTHING = 0.3       # exponential smoothing alpha for speed updates
@@ -371,10 +371,9 @@ class UavTracker:
             track.smoothed_points.append((new_lat, new_lng, now))
 
             # Initial speed estimate from distance and time
-            dt = now - first[2]
-            if dt > 0:
-                raw_speed = (proj_dist / dt) * 3600
-                track.speed_estimate = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, raw_speed))
+            # For the very first jump, simply clamp strictly to prevent absurd starting speeds.
+            # Using UAV_DEFAULT_SPEED_KMH ensures the predictive ghost doesn't fly off instantly.
+            track.speed_estimate = UAV_DEFAULT_SPEED_KMH
         else:
             # 3+ observations — update heading (first→latest centroid for stability)
             track.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
@@ -388,13 +387,16 @@ class UavTracker:
             new_lat, new_lng = _project_point(last_sp[0], last_sp[1], track.heading, advance_km)
             track.smoothed_points.append((new_lat, new_lng, now))
 
-            # Update speed with exponential smoothing
+            # Update speed with exponential smoothing, but only if enough time has passed
+            # since the very first observation (e.g. 15 seconds) to avoid initial jitter spikes.
             _, _, raw_proj_dist = _project_onto_line(
-                raw_lat, raw_lng, last_sp[0], last_sp[1], track.heading
+                raw_lat, raw_lng, first[0], first[1], track.heading
             )
             raw_proj_dist = max(raw_proj_dist, 0.0)
-            if dt > 0:
-                raw_speed = (raw_proj_dist / dt) * 3600
+            total_dt = now - first[2]
+            
+            if total_dt > 15.0:
+                raw_speed = (raw_proj_dist / total_dt) * 3600
                 raw_speed = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, raw_speed))
                 a = self.SPEED_SMOOTHING
                 track.speed_estimate = a * raw_speed + (1 - a) * track.speed_estimate
