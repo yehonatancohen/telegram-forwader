@@ -256,11 +256,24 @@ FIREBASE_UAV_NODE = "/public_state/uav_tracks"
 # Cities along a north-south corridor (western Galilee → coast)
 # Simulates a UAV entering from Lebanon heading south
 UAV_FLIGHT_PRESETS = {
-    "Lebanon → Western Galilee (south)": [
-        "ראש הנקרה", "שלומי", "מצובה", "גשר הזיו", "נהריה", "עכו",
+    # Each value is a list of "waves". Each wave is a list of cities that alert together.
+    # Single-city waves = one alert at a time (old behavior).
+    # Multi-city waves = multiple alerts at once (realistic).
+    "Lebanon → Western Galilee (single alerts)": [
+        ["ראש הנקרה"], ["שלומי"], ["מצובה"], ["גשר הזיו"], ["נהריה"], ["עכו"],
     ],
-    "Lebanon → Central Galilee": [
-        "זרעית", "שומרה", "אבן מנחם", "גורנות הגליל", "מעלות תרשיחא",
+    "Lebanon → Central Galilee (single alerts)": [
+        ["זרעית"], ["שומרה"], ["אבן מנחם"], ["גורנות הגליל"], ["מעלות תרשיחא"],
+    ],
+    "Lebanon → Western Galilee (batch alerts)": [
+        ["ראש הנקרה", "שלומי", "מצובה"],
+        ["גשר הזיו", "נהריה"],
+        ["עכו"],
+    ],
+    "Lebanon → Central Galilee (batch alerts)": [
+        ["זרעית", "שומרה"],
+        ["אבן מנחם", "גורנות הגליל"],
+        ["מעלות תרשיחא"],
     ],
 }
 
@@ -301,46 +314,77 @@ def _project_point(lat: float, lon: float, bearing_deg: float, dist_km: float) -
     return (math.degrees(lat2), math.degrees(lon2))
 
 
-def _build_uav_track(track_id: str, points: list[tuple[float, float, float]]) -> dict:
-    """Build a UAV track payload from a list of (lat, lng, timestamp) points."""
-    observed = [[p[0], p[1]] for p in points]
-    predicted = []
-    heading = 0.0
-    speed = 0.0
+def _project_onto_line(point_lat, point_lng, origin_lat, origin_lng, bearing_deg):
+    """Project a point onto a line defined by origin + bearing."""
+    dist = _haversine_km(origin_lat, origin_lng, point_lat, point_lng)
+    if dist < 0.01:
+        return (origin_lat, origin_lng, 0.0)
+    brng_to_point = _bearing(origin_lat, origin_lng, point_lat, point_lng)
+    angle_diff = math.radians(brng_to_point - bearing_deg)
+    along = dist * math.cos(angle_diff)
+    plat, plng = _project_point(origin_lat, origin_lng, bearing_deg, along)
+    return (plat, plng, along)
 
-    if len(points) >= 2:
-        recent = points[-4:]
-        bearings = []
-        weights = []
-        for i in range(len(recent) - 1):
-            b = _bearing(recent[i][0], recent[i][1], recent[i + 1][0], recent[i + 1][1])
-            bearings.append(b)
-            weights.append(i + 1)
 
-        sin_sum = sum(w * math.sin(math.radians(b)) for w, b in zip(weights, bearings))
-        cos_sum = sum(w * math.cos(math.radians(b)) for w, b in zip(weights, bearings))
-        heading = (math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360
+UAV_MIN_SPEED_KMH = 80
+UAV_MAX_SPEED_KMH = 300
+UAV_DEFAULT_SPEED_KMH = 180
+SPEED_SMOOTHING = 0.3
 
-        p1, p2 = points[-2], points[-1]
-        dist = _haversine_km(p1[0], p1[1], p2[0], p2[1])
-        dt = p2[2] - p1[2]
-        speed = (dist / dt) * 3600 if dt > 0 else 0
 
-        last = points[-1]
-        for secs in [30, 60]:
-            pred_dist = (speed / 3600) * secs
-            if pred_dist > 0:
-                plat, plng = _project_point(last[0], last[1], heading, pred_dist)
-                predicted.append([plat, plng])
+class _TestUavTrack:
+    """Mirrors brain.py UavTrack for test simulation."""
+    def __init__(self, track_id, lat, lng, ts):
+        self.track_id = track_id
+        self.raw_centroids = [(lat, lng, ts)]
+        self.smoothed_points = [(lat, lng, ts)]
+        self.heading = 0.0
+        self.speed_estimate = UAV_DEFAULT_SPEED_KMH
 
-    return {
-        "track_id": track_id,
-        "observed": observed,
-        "predicted": predicted,
-        "heading_deg": round(heading, 1),
-        "speed_kmh": round(speed, 0),
-        "last_updated": int(points[-1][2] * 1000),
-    }
+    def add_point(self, raw_lat, raw_lng, now):
+        self.raw_centroids.append((raw_lat, raw_lng, now))
+        first = self.raw_centroids[0]
+
+        if len(self.raw_centroids) == 2:
+            self.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
+            _, _, proj_dist = _project_onto_line(raw_lat, raw_lng, first[0], first[1], self.heading)
+            proj_dist = max(proj_dist, 0.5)
+            new_lat, new_lng = _project_point(first[0], first[1], self.heading, proj_dist)
+            self.smoothed_points.append((new_lat, new_lng, now))
+            dt = now - first[2]
+            if dt > 0:
+                self.speed_estimate = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, (proj_dist / dt) * 3600))
+        else:
+            self.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
+            last_sp = self.smoothed_points[-1]
+            dt = now - last_sp[2]
+            advance_km = max((self.speed_estimate / 3600) * dt, 0.5)
+            new_lat, new_lng = _project_point(last_sp[0], last_sp[1], self.heading, advance_km)
+            self.smoothed_points.append((new_lat, new_lng, now))
+            _, _, raw_proj_dist = _project_onto_line(raw_lat, raw_lng, last_sp[0], last_sp[1], self.heading)
+            raw_proj_dist = max(raw_proj_dist, 0.0)
+            if dt > 0:
+                raw_speed = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, (raw_proj_dist / dt) * 3600))
+                self.speed_estimate = SPEED_SMOOTHING * raw_speed + (1 - SPEED_SMOOTHING) * self.speed_estimate
+
+    def to_firebase(self):
+        observed = [[p[0], p[1]] for p in self.smoothed_points]
+        predicted = []
+        if len(self.smoothed_points) >= 2:
+            last = self.smoothed_points[-1]
+            for secs in [30, 60]:
+                pred_dist = (self.speed_estimate / 3600) * secs
+                if pred_dist > 0:
+                    plat, plng = _project_point(last[0], last[1], self.heading, pred_dist)
+                    predicted.append([plat, plng])
+        return {
+            "track_id": self.track_id,
+            "observed": observed,
+            "predicted": predicted,
+            "heading_deg": round(self.heading, 1),
+            "speed_kmh": round(self.speed_estimate, 0),
+            "last_updated": int(self.smoothed_points[-1][2] * 1000),
+        }
 
 
 def cmd_simulate_uav(polygons: dict):
@@ -348,8 +392,9 @@ def cmd_simulate_uav(polygons: dict):
     print("\nUAV flight path presets:")
     preset_names = list(UAV_FLIGHT_PRESETS.keys())
     for i, name in enumerate(preset_names):
-        cities = UAV_FLIGHT_PRESETS[name]
-        print(f"  {i}: {name} ({len(cities)} cities)")
+        waves = UAV_FLIGHT_PRESETS[name]
+        total_cities = sum(len(w) for w in waves)
+        print(f"  {i}: {name} ({total_cities} cities, {len(waves)} waves)")
 
     try:
         idx = int(input("Pick preset: ").strip())
@@ -358,46 +403,71 @@ def cmd_simulate_uav(polygons: dict):
         print("Invalid selection.")
         return
 
-    cities = UAV_FLIGHT_PRESETS[preset_name]
-    valid = [c for c in cities if c in polygons and polygons[c].get("polygon")]
-    if not valid:
+    waves = UAV_FLIGHT_PRESETS[preset_name]
+    # Filter each wave to valid cities
+    valid_waves = []
+    for wave in waves:
+        valid_cities = [c for c in wave if c in polygons and polygons[c].get("polygon")]
+        if valid_cities:
+            valid_waves.append(valid_cities)
+
+    if not valid_waves:
         print("No valid cities in preset!")
         return
 
-    delay = input("Delay between alerts in seconds (default 3): ").strip()
+    total_cities = sum(len(w) for w in valid_waves)
+
+    delay = input("Delay between waves in seconds (default 3): ").strip()
     delay = float(delay) if delay else 3.0
 
-    print(f"\nSimulating UAV flight: {len(valid)} cities, {delay}s apart")
-    print("Cities:", " → ".join(valid))
+    print(f"\nSimulating UAV flight: {total_cities} cities in {len(valid_waves)} waves, {delay}s apart")
+    for i, wave in enumerate(valid_waves):
+        print(f"  Wave {i+1}: {', '.join(wave)}")
     print("Starting in 2 seconds...\n")
     time.sleep(2)
 
     alert_ref = db.reference(FIREBASE_NODE)
     uav_ref = db.reference(FIREBASE_UAV_NODE)
     track_id = "uav_test_0"
-    points: list[tuple[float, float, float]] = []
+    track: _TestUavTrack | None = None
+    city_count = 0
 
-    for i, city_he in enumerate(valid):
-        # Write the alert polygon
-        payload = _make_payload(city_he, polygons[city_he]["city_name"], "uav")
-        key = _sanitize_fb_key(city_he)
-        alert_ref.child(key).set(payload)
-
-        # Compute centroid and add to track
-        lat, lng = _centroid(polygons[city_he]["polygon"])
+    for wi, wave in enumerate(valid_waves):
         now = time.time()
-        points.append((lat, lng, now))
 
-        # Build and push track data
-        track_payload = _build_uav_track(track_id, points)
+        # Compute average centroid of all cities in this wave
+        lats, lngs = [], []
+        for city_he in wave:
+            lat, lng = _centroid(polygons[city_he]["polygon"])
+            lats.append(lat)
+            lngs.append(lng)
+
+            # Write the alert polygon for each city
+            payload = _make_payload(city_he, polygons[city_he]["city_name"], "uav")
+            key = _sanitize_fb_key(city_he)
+            alert_ref.child(key).set(payload)
+
+        # Use average centroid of the wave as the single observation point
+        avg_lat = sum(lats) / len(lats)
+        avg_lng = sum(lngs) / len(lngs)
+
+        if track is None:
+            track = _TestUavTrack(track_id, avg_lat, avg_lng, now)
+        else:
+            track.add_point(avg_lat, avg_lng, now)
+
+        # Push track data
+        track_payload = track.to_firebase()
         uav_ref.set({track_id: track_payload})
 
-        print(f"  [{i+1}/{len(valid)}] UAV alert: {city_he}  →  track updated ({len(points)} pts)")
+        city_count += len(wave)
+        cities_str = ", ".join(wave)
+        print(f"  Wave {wi+1}/{len(valid_waves)}: [{cities_str}]  →  track updated ({len(track.smoothed_points)} pts)")
 
-        if i < len(valid) - 1:
+        if wi < len(valid_waves) - 1:
             time.sleep(delay)
 
-    print(f"\nDone! {len(valid)} UAV alerts + track written directly to Firebase.")
+    print(f"\nDone! {city_count} UAV alerts in {len(valid_waves)} waves written to Firebase.")
     print("Check the map — drone should be visible now.")
 
 

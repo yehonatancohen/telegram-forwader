@@ -52,7 +52,7 @@ REQUEST_TIMEOUT = 5        # HTTP timeout in seconds
 TELEGRAM_YELLOW_TTL = 120   # 2 minutes
 PRE_ALERT_TTL = 720         # 12 minutes
 ALERT_DURATION = 90         # 1.5 minutes → then after_alert
-AFTER_ALERT_SAFETY_TTL = 86400  # 24h safety net (cleared by Oref signal normally)
+AFTER_ALERT_SAFETY_TTL = 1800   # 30 min safety net (cleared by Oref signal normally)
 
 POLYGONS_FILE = Path(os.environ.get("POLYGONS_FILE", Path(__file__).parent / "polygons.json"))
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("SERVICE_ACCOUNT_FILE", Path(__file__).parent / "serviceAccountKey.json"))
@@ -175,6 +175,40 @@ def _project_point(lat: float, lon: float, bearing_deg: float, dist_km: float) -
     return (math.degrees(lat2), math.degrees(lon2))
 
 
+def _project_onto_line(
+    point_lat: float, point_lng: float,
+    origin_lat: float, origin_lng: float,
+    bearing_deg: float,
+) -> tuple[float, float, float]:
+    """Project a point onto a line defined by origin + bearing.
+
+    Returns (projected_lat, projected_lng, signed_distance_km).
+    Positive distance = forward along bearing, negative = behind origin.
+    """
+    dist = _haversine_km(origin_lat, origin_lng, point_lat, point_lng)
+    if dist < 0.01:  # essentially same point
+        return (origin_lat, origin_lng, 0.0)
+    brng_to_point = _bearing(origin_lat, origin_lng, point_lat, point_lng)
+    angle_diff = math.radians(brng_to_point - bearing_deg)
+    along = dist * math.cos(angle_diff)  # signed forward distance
+    plat, plng = _project_point(origin_lat, origin_lng, bearing_deg, along)
+    return (plat, plng, along)
+
+
+def _perpendicular_dist_km(
+    point_lat: float, point_lng: float,
+    origin_lat: float, origin_lng: float,
+    bearing_deg: float,
+) -> float:
+    """Perpendicular distance from a point to a line (origin + bearing) in km."""
+    dist = _haversine_km(origin_lat, origin_lng, point_lat, point_lng)
+    if dist < 0.01:
+        return 0.0
+    brng_to_point = _bearing(origin_lat, origin_lng, point_lat, point_lng)
+    angle_diff = math.radians(brng_to_point - bearing_deg)
+    return abs(dist * math.sin(angle_diff))
+
+
 def _compute_centroid(polygon_coords: list) -> tuple[float, float]:
     """Average of all boundary points → (lat, lng)."""
     n = len(polygon_coords)
@@ -187,65 +221,183 @@ def _compute_centroid(polygon_coords: list) -> tuple[float, float]:
 
 # ── UAV Flight Path Tracker ───────────────────────────────────────────────
 
+UAV_MIN_SPEED_KMH = 80
+UAV_MAX_SPEED_KMH = 300
+UAV_DEFAULT_SPEED_KMH = 180
+
 
 class UavTrack:
     """A single tracked UAV flight path."""
 
-    __slots__ = ("track_id", "points", "cities", "last_updated")
+    __slots__ = ("track_id", "raw_centroids", "smoothed_points", "cities",
+                 "last_updated", "heading", "speed_estimate")
 
     def __init__(self, track_id: str, lat: float, lng: float, timestamp: float, city: str):
         self.track_id = track_id
-        self.points: list[tuple[float, float, float]] = [(lat, lng, timestamp)]
+        self.raw_centroids: list[tuple[float, float, float]] = [(lat, lng, timestamp)]
+        self.smoothed_points: list[tuple[float, float, float]] = [(lat, lng, timestamp)]
         self.cities: set[str] = {city}
         self.last_updated = timestamp
+        self.heading: float = 0.0
+        self.speed_estimate: float = UAV_DEFAULT_SPEED_KMH
 
 
 class UavTracker:
-    """Clusters UAV alerts into tracks and predicts flight paths."""
+    """Clusters UAV alerts into tracks and predicts smooth flight paths.
 
-    CLUSTER_DISTANCE_KM = 50.0
+    Instead of using raw city centroids as the flight path (which causes
+    teleporting/zigzag), this estimates a straight-line corridor through
+    the alert areas and places observations along it.
+    """
+
+    CLUSTER_LATERAL_KM = 25.0   # max perpendicular distance from track line
+    CLUSTER_FORWARD_KM = 80.0   # max forward distance from last smoothed point
     STALE_SECONDS = 300.0
     PREDICT_SECONDS = [30, 60]
+    SPEED_SMOOTHING = 0.3       # exponential smoothing alpha for speed updates
 
     def __init__(self):
         self.tracks: dict[str, UavTrack] = {}
         self._next_id = 0
 
     def update(self, uav_cities: set[str], centroids: dict[str, tuple[float, float]], now: float) -> bool:
-        """Process current UAV-alerted cities. Returns True if tracks changed."""
+        """Process current UAV-alerted cities. Returns True if tracks changed.
+
+        When multiple cities alert at once, their centroids are averaged into
+        a single observation per track (the UAV is somewhere in that area,
+        not at each city center individually).
+        """
         changed = self._cleanup_stale(now)
 
+        # Collect new (untracked) cities with valid centroids
+        new_cities = []
         for city in uav_cities:
             if city not in centroids:
                 continue
-            # Skip if city already tracked
             if any(city in t.cities for t in self.tracks.values()):
                 continue
+            new_cities.append(city)
 
+        if not new_cities:
+            return changed
+
+        # Assign each new city to a track (or mark for new track creation)
+        # Group by track so simultaneous alerts merge into one observation
+        track_batches: dict[str, list[str]] = {}   # track_id → [cities]
+        orphans: list[str] = []                      # cities needing new tracks
+
+        for city in new_cities:
             lat, lng = centroids[city]
-
-            # Find closest track
             best_track = None
-            best_dist = self.CLUSTER_DISTANCE_KM
+            best_score = float("inf")
             for track in self.tracks.values():
-                last_pt = track.points[-1]
-                dist = _haversine_km(lat, lng, last_pt[0], last_pt[1])
-                if dist < best_dist:
-                    best_dist = dist
-                    best_track = track
+                if len(track.smoothed_points) < 2:
+                    dist = _haversine_km(lat, lng, track.smoothed_points[-1][0], track.smoothed_points[-1][1])
+                    if dist < self.CLUSTER_FORWARD_KM and dist < best_score:
+                        best_score = dist
+                        best_track = track
+                else:
+                    last_sp = track.smoothed_points[-1]
+                    perp = _perpendicular_dist_km(lat, lng, last_sp[0], last_sp[1], track.heading)
+                    _, _, along = _project_onto_line(lat, lng, last_sp[0], last_sp[1], track.heading)
+                    if perp < self.CLUSTER_LATERAL_KM and along > -5 and along < self.CLUSTER_FORWARD_KM:
+                        score = perp + abs(along) * 0.1
+                        if score < best_score:
+                            best_score = score
+                            best_track = track
 
             if best_track:
-                best_track.points.append((lat, lng, now))
-                best_track.cities.add(city)
-                best_track.last_updated = now
+                track_batches.setdefault(best_track.track_id, []).append(city)
             else:
-                tid = f"uav_{self._next_id}"
-                self._next_id += 1
-                self.tracks[tid] = UavTrack(tid, lat, lng, now, city)
+                orphans.append(city)
 
+        # Add batched cities to existing tracks (average centroid per batch)
+        for tid, cities in track_batches.items():
+            track = self.tracks[tid]
+            lats = [centroids[c][0] for c in cities]
+            lngs = [centroids[c][1] for c in cities]
+            avg_lat = sum(lats) / len(lats)
+            avg_lng = sum(lngs) / len(lngs)
+            self._add_to_track(track, avg_lat, avg_lng, now, cities)
+            changed = True
+
+        # Create new tracks for orphan cities (group nearby orphans together)
+        while orphans:
+            city = orphans.pop(0)
+            lat, lng = centroids[city]
+            tid = f"uav_{self._next_id}"
+            self._next_id += 1
+            # Check if remaining orphans are close enough to group with this one
+            grouped = [city]
+            remaining = []
+            for other in orphans:
+                olat, olng = centroids[other]
+                if _haversine_km(lat, lng, olat, olng) < self.CLUSTER_LATERAL_KM * 2:
+                    grouped.append(other)
+                else:
+                    remaining.append(other)
+            orphans = remaining
+
+            # Average centroid of grouped cities
+            lats = [centroids[c][0] for c in grouped]
+            lngs = [centroids[c][1] for c in grouped]
+            avg_lat = sum(lats) / len(lats)
+            avg_lng = sum(lngs) / len(lngs)
+            new_track = UavTrack(tid, avg_lat, avg_lng, now, grouped[0])
+            for c in grouped[1:]:
+                new_track.cities.add(c)
+            self.tracks[tid] = new_track
             changed = True
 
         return changed
+
+    def _add_to_track(self, track: UavTrack, raw_lat: float, raw_lng: float,
+                      now: float, cities: list[str]) -> None:
+        """Add a new observation to an existing track with smoothing."""
+        track.raw_centroids.append((raw_lat, raw_lng, now))
+        track.cities.update(cities)
+        track.last_updated = now
+
+        first = track.raw_centroids[0]
+
+        if len(track.raw_centroids) == 2:
+            # Second observation — establish heading from first to new centroid
+            track.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
+
+            # Project the raw centroid onto the heading line from the first point
+            _, _, proj_dist = _project_onto_line(raw_lat, raw_lng, first[0], first[1], track.heading)
+            proj_dist = max(proj_dist, 0.5)  # at least 0.5 km forward
+            new_lat, new_lng = _project_point(first[0], first[1], track.heading, proj_dist)
+            track.smoothed_points.append((new_lat, new_lng, now))
+
+            # Initial speed estimate from distance and time
+            dt = now - first[2]
+            if dt > 0:
+                raw_speed = (proj_dist / dt) * 3600
+                track.speed_estimate = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, raw_speed))
+        else:
+            # 3+ observations — update heading (first→latest centroid for stability)
+            track.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
+
+            # Advance along heading from last smoothed point by estimated travel
+            last_sp = track.smoothed_points[-1]
+            dt = now - last_sp[2]
+            advance_km = (track.speed_estimate / 3600) * dt
+            advance_km = max(advance_km, 0.5)  # minimum advance to avoid stacking
+
+            new_lat, new_lng = _project_point(last_sp[0], last_sp[1], track.heading, advance_km)
+            track.smoothed_points.append((new_lat, new_lng, now))
+
+            # Update speed with exponential smoothing
+            _, _, raw_proj_dist = _project_onto_line(
+                raw_lat, raw_lng, last_sp[0], last_sp[1], track.heading
+            )
+            raw_proj_dist = max(raw_proj_dist, 0.0)
+            if dt > 0:
+                raw_speed = (raw_proj_dist / dt) * 3600
+                raw_speed = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, raw_speed))
+                a = self.SPEED_SMOOTHING
+                track.speed_estimate = a * raw_speed + (1 - a) * track.speed_estimate
 
     def _cleanup_stale(self, now: float) -> bool:
         stale = [tid for tid, t in self.tracks.items() if now - t.last_updated > self.STALE_SECONDS]
@@ -257,46 +409,23 @@ class UavTracker:
         """Serialize all tracks for the frontend."""
         result = {}
         for tid, track in self.tracks.items():
-            observed = [[p[0], p[1]] for p in track.points]
+            observed = [[p[0], p[1]] for p in track.smoothed_points]
             predicted = []
-            heading = 0.0
-            speed = 0.0
 
-            if len(track.points) >= 2:
-                # Weighted average bearing from last 3 segments
-                recent = track.points[-4:]  # up to last 4 points → 3 segments
-                bearings = []
-                weights = []
-                for i in range(len(recent) - 1):
-                    b = _bearing(recent[i][0], recent[i][1], recent[i + 1][0], recent[i + 1][1])
-                    bearings.append(b)
-                    weights.append(i + 1)
-
-                # Weighted circular mean (handle wrap-around)
-                sin_sum = sum(w * math.sin(math.radians(b)) for w, b in zip(weights, bearings))
-                cos_sum = sum(w * math.cos(math.radians(b)) for w, b in zip(weights, bearings))
-                heading = (math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360
-
-                # Speed from last 2 points
-                p1, p2 = track.points[-2], track.points[-1]
-                dist = _haversine_km(p1[0], p1[1], p2[0], p2[1])
-                dt = p2[2] - p1[2]
-                speed = (dist / dt) * 3600 if dt > 0 else 0  # km/h
-
-                # Project prediction points
-                last = track.points[-1]
+            if len(track.smoothed_points) >= 2:
+                last = track.smoothed_points[-1]
                 for secs in self.PREDICT_SECONDS:
-                    pred_dist = (speed / 3600) * secs  # km
+                    pred_dist = (track.speed_estimate / 3600) * secs
                     if pred_dist > 0:
-                        plat, plng = _project_point(last[0], last[1], heading, pred_dist)
+                        plat, plng = _project_point(last[0], last[1], track.heading, pred_dist)
                         predicted.append([plat, plng])
 
             result[tid] = {
                 "track_id": tid,
                 "observed": observed,
                 "predicted": predicted,
-                "heading_deg": round(heading, 1),
-                "speed_kmh": round(speed, 0),
+                "heading_deg": round(track.heading, 1),
+                "speed_kmh": round(track.speed_estimate, 0),
                 "last_updated": int(track.last_updated * 1000),
             }
 
