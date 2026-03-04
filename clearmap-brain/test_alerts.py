@@ -18,8 +18,15 @@ from pathlib import Path
 import firebase_admin
 from firebase_admin import credentials, db
 
+# Import district mapping if available
+try:
+    from district_to_areas import DISTRICT_AREAS
+except ImportError:
+    DISTRICT_AREAS = {}
+
 FIREBASE_DB_URL = "https://clear-map-f20d0-default-rtdb.europe-west1.firebasedatabase.app/"
 FIREBASE_NODE = "/public_state/active_alerts"
+FIREBASE_UAV_NODE = "/public_state/uav_tracks"
 SERVICE_ACCOUNT = Path(__file__).parent / "serviceAccountKey.json"
 POLYGONS_FILE = Path(__file__).parent / "polygons.json"
 
@@ -27,20 +34,101 @@ STATUSES = ["alert", "pre_alert", "after_alert", "telegram_yellow", "uav", "terr
 
 INTEL_CHANNELS = ["beforeredalert", "yemennews7071"]
 
+REGION_MAPPING = {
+    "צפון": ["מחוז צפון", "מחוז גליל עליון", "מחוז גליל תחתון", "מחוז גולן",
+             "מחוז חיפה", "מחוז יערות הכרמל", "מחוז קו העימות", "מחוז העמקים",
+             "מחוז בקעת בית שאן", "מחוז ואדי ערה", "מחוז קצרין", "מחוז תבור", "מחוז קריות"],
+    "דרום": ["מחוז דרום הנגב", "מחוז עוטף עזה", "מחוז נגב", "מחוז דרום השפלה",
+             "מחוז אילת", "מחוז ים המלח", "מחוז לכיש", "מחוז מערב הנגב", "מחוז מרכז הנגב", "מחוז מערב לכיש"],
+    "מרכז": ["מחוז דן", "מחוז השפלה", "מחוז ירקון", "מחוז שרון", "מחוז חפר",
+             "מחוז שומרון", "מחוז מנשה"],
+    "ירושלים": ["מחוז ירושלים", "מחוז יהודה", "מחוז בית שמש", "מחוז בקעה"],
+}
+
+UAV_FLIGHT_PRESETS = {
+    "Lebanon → Haifa (Direct)": [
+        ["ראש הנקרה", "לימן"],
+        ["נהריה", "געתון"],
+        ["עכו", "שמרת"],
+        ["קריות", "עכו - אזור תעשייה"],
+        ["חיפה - מפרץ", "נשר"],
+        ["חיפה - כרמל, הדר ועיר תחתית"],
+    ],
+    "Lebanon → Central Galilee → Tiberias": [
+        ["זרעית", "שתולה"],
+        ["פסוטה", "אבירים"],
+        ["מעלות תרשיחא", "מעונה"],
+        ["כרמיאל", "בענה"],
+        ["מע'אר", "עילבון"],
+        ["טבריה", "מגדל"],
+    ],
+    "Gaza → Tel Aviv (Coast)": [
+        ["נתיב העשרה", "זיקים"],
+        ["אשקלון - צפון", "ניצנים"],
+        ["אשדוד - א,ב,ד,ה", "גן יבנה"],
+        ["יבנה", "פלמחים"],
+        ["ראשון לציון - מערב", "חולון"],
+        ["תל אביב - דרום העיר ויפו", "בת ים"],
+    ],
+    "Yemen → Eilat → Dead Sea": [
+        ["אילת"],
+        ["אילות"],
+        ["צופר", "פארן"],
+        ["עין יהב", "חצבה"],
+        ["נאות הכיכר", "עין תמר"],
+        ["עין גדי", "בתי מלון ים המלח"],
+    ],
+}
+
+SALVO_PRESETS = {
+    "North Salvo (Galilee)": [
+        "מחוז גליל עליון", "מחוז גליל תחתון", "מחוז קו העימות"
+    ],
+    "Center Salvo (Gush Dan)": [
+        "מחוז דן", "מחוז השפלה", "מחוז שרון"
+    ],
+    "South Salvo (Otef Gaza + Negev)": [
+        "מחוז עוטף עזה", "מחוז נגב", "מחוז דרום הנגב"
+    ],
+}
 
 def _sanitize_fb_key(key: str) -> str:
     return re.sub(r'[.$/\[\]#]', '_', key)
 
 
-def _make_payload(city_he: str, city_name: str, status: str, is_double: bool = False) -> dict:
+def _make_payload(city_he: str, city_name: str, status: str, is_double: bool = False, ts: float = None) -> dict:
     return {
         "id": f"alert_{city_he}",
         "city_name": city_name,
         "city_name_he": city_he,
-        "timestamp": int(time.time() * 1000),
+        "timestamp": int((ts or time.time()) * 1000),
         "is_double": is_double,
         "status": status,
+        "is_test": True,
     }
+
+
+def _send_batch(cities: list[str], polygons: dict, status: str = None):
+    if not status:
+        print("Status:")
+        for i, s in enumerate(STATUSES):
+            print(f"  {i}: {s}")
+        try:
+            status = STATUSES[int(input("Pick status: ").strip())]
+        except (ValueError, IndexError):
+            print("Invalid selection.")
+            return
+
+    batch = {}
+    for city_he in cities:
+        if city_he not in polygons:
+            continue
+        key = _sanitize_fb_key(city_he)
+        batch[key] = _make_payload(city_he, polygons[city_he]["city_name"], status)
+
+    ref = db.reference(FIREBASE_NODE)
+    ref.update(batch)
+    print(f"Written {len(batch)} alerts with status={status}")
 
 
 def cmd_add_alert(polygons: dict):
@@ -90,28 +178,83 @@ def cmd_batch_alert(polygons: dict):
     limit = int(limit) if limit else len(matches)
     matches = matches[:limit]
 
-    print("Status:")
-    for i, s in enumerate(STATUSES):
-        print(f"  {i}: {s}")
+    _send_batch(matches, polygons)
+
+
+def cmd_district_alert(polygons: dict):
+    if not DISTRICT_AREAS:
+        print("DISTRICT_AREAS not loaded.")
+        return
+    
+    districts = sorted(list(DISTRICT_AREAS.keys()))
+    for i, d in enumerate(districts):
+        print(f"  {i}: {d}")
+    
     try:
-        status = STATUSES[int(input("Pick status: ").strip())]
+        idx = int(input("Pick district: ").strip())
+        district = districts[idx]
     except (ValueError, IndexError):
         print("Invalid selection.")
         return
+    
+    cities = DISTRICT_AREAS[district]
+    print(f"Alerting {len(cities)} cities in {district}")
+    _send_batch(cities, polygons)
 
-    batch = {}
-    for city_he in matches:
-        key = _sanitize_fb_key(city_he)
-        batch[key] = _make_payload(city_he, polygons[city_he]["city_name"], status)
 
-    ref = db.reference(FIREBASE_NODE)
-    ref.update(batch)
-    print(f"Written {len(batch)} alerts with status={status}")
+def cmd_region_alert(polygons: dict):
+    regions = sorted(list(REGION_MAPPING.keys()))
+    for i, r in enumerate(regions):
+        print(f"  {i}: {r}")
+    
+    try:
+        idx = int(input("Pick region: ").strip())
+        region = regions[idx]
+    except (ValueError, IndexError):
+        print("Invalid selection.")
+        return
+    
+    districts = REGION_MAPPING[region]
+    cities = []
+    for d in districts:
+        cities.extend(DISTRICT_AREAS.get(d, []))
+    
+    print(f"Alerting {len(cities)} cities in region {region}")
+    _send_batch(cities, polygons)
 
 
 def cmd_clear_all():
     db.reference(FIREBASE_NODE).set({})
-    print("All alerts cleared.")
+    db.reference(FIREBASE_UAV_NODE).set({})
+    print("All alerts and UAV tracks cleared.")
+
+
+def cmd_clear_test_alerts():
+    # Clear active alerts
+    alerts_ref = db.reference(FIREBASE_NODE)
+    alerts = alerts_ref.get()
+    if alerts:
+        test_keys = {k: None for k, v in alerts.items() if v.get("is_test")}
+        if test_keys:
+            alerts_ref.update(test_keys)
+            print(f"Cleared {len(test_keys)} test alerts.")
+        else:
+            print("No test alerts found.")
+    else:
+        print("No active alerts.")
+
+    # Clear UAV tracks
+    uav_ref = db.reference(FIREBASE_UAV_NODE)
+    tracks = uav_ref.get()
+    if tracks:
+        test_keys = {k: None for k, v in tracks.items() if v.get("is_test")}
+        if test_keys:
+            uav_ref.update(test_keys)
+            print(f"Cleared {len(test_keys)} test UAV tracks.")
+        else:
+            print("No test UAV tracks found.")
+    else:
+        print("No active UAV tracks.")
 
 
 def cmd_clear_one(polygons: dict):
@@ -251,33 +394,6 @@ def cmd_telegram_show():
         print(f"{channel:<20} {age:>4}s  {msg}")
 
 
-FIREBASE_UAV_NODE = "/public_state/uav_tracks"
-
-# Cities along a north-south corridor (western Galilee → coast)
-# Simulates a UAV entering from Lebanon heading south
-UAV_FLIGHT_PRESETS = {
-    # Each value is a list of "waves". Each wave is a list of cities that alert together.
-    # Single-city waves = one alert at a time (old behavior).
-    # Multi-city waves = multiple alerts at once (realistic).
-    "Lebanon → Western Galilee (single alerts)": [
-        ["ראש הנקרה"], ["שלומי"], ["מצובה"], ["גשר הזיו"], ["נהריה"], ["עכו"],
-    ],
-    "Lebanon → Central Galilee (single alerts)": [
-        ["זרעית"], ["שומרה"], ["אבן מנחם"], ["גורנות הגליל"], ["מעלות תרשיחא"],
-    ],
-    "Lebanon → Western Galilee (batch alerts)": [
-        ["ראש הנקרה", "שלומי", "מצובה"],
-        ["גשר הזיו", "נהריה"],
-        ["עכו"],
-    ],
-    "Lebanon → Central Galilee (batch alerts)": [
-        ["זרעית", "שומרה"],
-        ["אבן מנחם", "גורנות הגליל"],
-        ["מעלות תרשיחא"],
-    ],
-}
-
-
 def _centroid(polygon_coords: list) -> tuple[float, float]:
     """Average of boundary points → (lat, lng)."""
     n = len(polygon_coords)
@@ -344,13 +460,23 @@ class _TestUavTrack:
     def add_point(self, raw_lat, raw_lng, now):
         self.raw_centroids.append((raw_lat, raw_lng, now))
         first = self.raw_centroids[0]
+        UAV_LEAD_TIME_SECONDS = 90.0
 
         if len(self.raw_centroids) == 2:
             self.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
+
+            offset_km = (UAV_DEFAULT_SPEED_KMH / 3600) * UAV_LEAD_TIME_SECONDS
+            back_h = (self.heading + 180) % 360
+            fixed_first_lat, fixed_first_lng = _project_point(first[0], first[1], back_h, offset_km)
+            self.smoothed_points[0] = (fixed_first_lat, fixed_first_lng, first[2])
+
             _, _, proj_dist = _project_onto_line(raw_lat, raw_lng, first[0], first[1], self.heading)
-            proj_dist = max(proj_dist, 0.5)
-            new_lat, new_lng = _project_point(first[0], first[1], self.heading, proj_dist)
+            _, _, proj_dist_from_fixed = _project_onto_line(raw_lat, raw_lng, fixed_first_lat, fixed_first_lng, self.heading)
+            
+            current_dist = max(proj_dist_from_fixed - offset_km, 0.5)
+            new_lat, new_lng = _project_point(fixed_first_lat, fixed_first_lng, self.heading, current_dist)
             self.smoothed_points.append((new_lat, new_lng, now))
+
             dt = now - first[2]
             if dt > 0:
                 self.speed_estimate = max(UAV_MIN_SPEED_KMH, min(UAV_MAX_SPEED_KMH, (proj_dist / dt) * 3600))
@@ -384,6 +510,7 @@ class _TestUavTrack:
             "heading_deg": round(self.heading, 1),
             "speed_kmh": round(self.speed_estimate, 0),
             "last_updated": int(self.smoothed_points[-1][2] * 1000),
+            "is_test": True,
         }
 
 
@@ -417,7 +544,7 @@ def cmd_simulate_uav(polygons: dict):
 
     total_cities = sum(len(w) for w in valid_waves)
 
-    delay = input("Delay between waves in seconds (default 3): ").strip()
+    delay = input("Delay between waves in seconds (Enter=3, 0=instant): ").strip()
     delay = float(delay) if delay else 3.0
 
     print(f"\nSimulating UAV flight: {total_cities} cities in {len(valid_waves)} waves, {delay}s apart")
@@ -428,7 +555,7 @@ def cmd_simulate_uav(polygons: dict):
 
     alert_ref = db.reference(FIREBASE_NODE)
     uav_ref = db.reference(FIREBASE_UAV_NODE)
-    track_id = "uav_test_0"
+    track_id = f"uav_test_{int(time.time())}"
     track: _TestUavTrack | None = None
     city_count = 0
 
@@ -437,6 +564,7 @@ def cmd_simulate_uav(polygons: dict):
 
         # Compute average centroid of all cities in this wave
         lats, lngs = [], []
+        batch = {}
         for city_he in wave:
             lat, lng = _centroid(polygons[city_he]["polygon"])
             lats.append(lat)
@@ -445,7 +573,9 @@ def cmd_simulate_uav(polygons: dict):
             # Write the alert polygon for each city
             payload = _make_payload(city_he, polygons[city_he]["city_name"], "uav")
             key = _sanitize_fb_key(city_he)
-            alert_ref.child(key).set(payload)
+            batch[key] = payload
+
+        alert_ref.update(batch)
 
         # Use average centroid of the wave as the single observation point
         avg_lat = sum(lats) / len(lats)
@@ -458,23 +588,38 @@ def cmd_simulate_uav(polygons: dict):
 
         # Push track data
         track_payload = track.to_firebase()
-        uav_ref.set({track_id: track_payload})
+        uav_ref.update({track_id: track_payload})
 
         city_count += len(wave)
         cities_str = ", ".join(wave)
         print(f"  Wave {wi+1}/{len(valid_waves)}: [{cities_str}]  →  track updated ({len(track.smoothed_points)} pts)")
 
-        if wi < len(valid_waves) - 1:
+        if wi < len(valid_waves) - 1 and delay > 0:
             time.sleep(delay)
 
     print(f"\nDone! {city_count} UAV alerts in {len(valid_waves)} waves written to Firebase.")
-    print("Check the map — drone should be visible now.")
 
 
-def cmd_clear_uav_tracks():
-    """Clear all UAV flight path tracks from Firebase."""
-    db.reference(FIREBASE_UAV_NODE).set({})
-    print("UAV tracks cleared.")
+def cmd_salvo_scenario(polygons: dict):
+    print("\nSalvo presets:")
+    preset_names = list(SALVO_PRESETS.keys())
+    for i, name in enumerate(preset_names):
+        print(f"  {i}: {name}")
+    
+    try:
+        idx = int(input("Pick preset: ").strip())
+        preset_name = preset_names[idx]
+    except (ValueError, IndexError):
+        print("Invalid selection.")
+        return
+
+    districts = SALVO_PRESETS[preset_name]
+    cities = []
+    for d in districts:
+        cities.extend(DISTRICT_AREAS.get(d, []))
+    
+    print(f"Executing SALVO: {len(cities)} cities in {len(districts)} districts")
+    _send_batch(cities, polygons, status="alert")
 
 
 def main():
@@ -491,9 +636,16 @@ def main():
     print("NOTE: For telegram testing (7/8), both containers must be RUNNING.\n")
 
     while True:
-        print("\n1) Add alert    2) Batch alert     3) Clear one    4) Clear all")
-        print("5) Show active  6) Exit            7) Inject telegram msg")
-        print("8) Show intel   9) Simulate UAV   10) Clear UAV tracks")
+        print("\n--- Alerts ---")
+        print("1) Add single   2) Search batch   3) Alert District  4) Alert Region")
+        print("5) Clear all    6) Clear test     7) Clear one       8) Show active")
+        print("--- Telegram ---")
+        print("9) Inject msg   10) Show intel")
+        print("--- Scenarios ---")
+        print("11) Simulate UAV (Real-time/Fast-forward)")
+        print("12) Salvo Attack")
+        print("0) Exit")
+        
         choice = input("> ").strip()
 
         if choice == "1":
@@ -501,21 +653,27 @@ def main():
         elif choice == "2":
             cmd_batch_alert(polygons)
         elif choice == "3":
-            cmd_clear_one(polygons)
+            cmd_district_alert(polygons)
         elif choice == "4":
-            cmd_clear_all()
+            cmd_region_alert(polygons)
         elif choice == "5":
-            cmd_show_active()
+            cmd_clear_all()
         elif choice == "6":
-            break
+            cmd_clear_test_alerts()
         elif choice == "7":
-            cmd_telegram_inject()
+            cmd_clear_one(polygons)
         elif choice == "8":
-            cmd_telegram_show()
+            cmd_show_active()
         elif choice == "9":
-            cmd_simulate_uav(polygons)
+            cmd_telegram_inject()
         elif choice == "10":
-            cmd_clear_uav_tracks()
+            cmd_telegram_show()
+        elif choice == "11":
+            cmd_simulate_uav(polygons)
+        elif choice == "12":
+            cmd_salvo_scenario(polygons)
+        elif choice == "0":
+            break
         else:
             print("Invalid choice.")
 

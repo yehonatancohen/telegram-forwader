@@ -360,6 +360,7 @@ class UavTracker:
         track.last_updated = now
 
         first = track.raw_centroids[0]
+        UAV_LEAD_TIME_SECONDS = 90.0
 
         if len(track.raw_centroids) == 2:
             # Second observation — establish heading from first to new centroid
@@ -374,16 +375,21 @@ class UavTracker:
             else:
                 track.origin_type = "סיכול ממוקד / חמאס"
 
-            # Project the raw centroid onto the heading line from the first point
-            _, _, proj_dist = _project_onto_line(raw_lat, raw_lng, first[0], first[1], track.heading)
-            proj_dist = max(proj_dist, 0.5)  # at least 0.5 km forward
-            new_lat, new_lng = _project_point(first[0], first[1], track.heading, proj_dist)
-            track.smoothed_points.append((new_lat, new_lng, now))
-
             # Initial speed estimate from distance and time
-            # For the very first jump, simply clamp strictly to prevent absurd starting speeds.
-            # Using UAV_DEFAULT_SPEED_KMH ensures the predictive ghost doesn't fly off instantly.
             track.speed_estimate = UAV_DEFAULT_SPEED_KMH
+
+            # Retroactively fix the first point to be 90s behind the first centroid
+            offset_km = (UAV_DEFAULT_SPEED_KMH / 3600) * UAV_LEAD_TIME_SECONDS
+            back_h = (track.heading + 180) % 360
+            fixed_first_lat, fixed_first_lng = _project_point(first[0], first[1], back_h, offset_km)
+            track.smoothed_points[0] = (fixed_first_lat, fixed_first_lng, first[2])
+
+            # The current true position is 90s behind the NEW centroid along the track
+            _, _, proj_dist_from_fixed = _project_onto_line(raw_lat, raw_lng, fixed_first_lat, fixed_first_lng, track.heading)
+            
+            current_dist = max(proj_dist_from_fixed - offset_km, 0.5)
+            new_lat, new_lng = _project_point(fixed_first_lat, fixed_first_lng, track.heading, current_dist)
+            track.smoothed_points.append((new_lat, new_lng, now))
         else:
             # 3+ observations — update heading (first→latest centroid for stability)
             track.heading = _bearing(first[0], first[1], raw_lat, raw_lng)
