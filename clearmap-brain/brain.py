@@ -988,6 +988,9 @@ def _bot_poller():
 
         except requests.exceptions.Timeout:
             continue  # long-poll timeout is normal
+        except requests.exceptions.ConnectionError:
+            log.warning("🤖 Bot poller: network unreachable — retrying in 30s")
+            time.sleep(30)
         except Exception as e:
             log.error("🤖 Bot poller error: %s", e)
             time.sleep(5)

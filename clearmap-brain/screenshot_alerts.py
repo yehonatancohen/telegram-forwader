@@ -49,6 +49,20 @@ LEGEND_ITEMS = [
 ]
 
 
+def _bidi_text(text: str) -> str:
+    """Convert Hebrew (RTL) text to visual order for Pillow rendering.
+
+    Pillow draws text left-to-right. Hebrew logical order is right-to-left,
+    so we reverse the string to get correct visual display.
+    """
+    try:
+        from bidi.algorithm import get_display
+        return get_display(text)
+    except ImportError:
+        # Fallback: simple reversal works for pure Hebrew strings
+        return text[::-1]
+
+
 def _load_hebrew_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Try to load a Hebrew-capable font."""
     candidates = [
@@ -110,7 +124,8 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str) -> Imag
     dummy_draw = ImageDraw.Draw(img)
     max_text_w = 0
     for _, label in items:
-        bbox = dummy_draw.textbbox((0, 0), label, font=font)
+        visual_label = _bidi_text(label)
+        bbox = dummy_draw.textbbox((0, 0), visual_label, font=font)
         text_w = bbox[2] - bbox[0]
         max_text_w = max(max_text_w, text_w)
 
@@ -150,11 +165,12 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str) -> Imag
         )
 
         # Text to the left of the dot (RTL layout)
-        bbox = draw.textbbox((0, 0), label, font=font)
+        visual_label = _bidi_text(label)
+        bbox = draw.textbbox((0, 0), visual_label, font=font)
         text_w = bbox[2] - bbox[0]
         text_x = dot_cx - dot_radius - inner_pad - text_w
         text_y = row_y + (row_height - font_size) // 2
-        draw.text((text_x, text_y), label, fill=(255, 255, 255, 230), font=font)
+        draw.text((text_x, text_y), visual_label, fill=(255, 255, 255, 230), font=font)
 
     return img
 

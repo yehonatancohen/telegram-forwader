@@ -53,6 +53,11 @@ _BOT_TOKEN = _load_screenshot_config()
 
 SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
 
+# When running from test_alerts.py, screenshots go only to the developer
+_DEV_CHAT_ID = "985770181"
+_LOCALHOST_URL = "http://localhost:3000"
+_PROD_URL = "https://clearmap.co.il"
+
 
 def _load_subscribers() -> list[str]:
     """Load subscriber chat IDs from disk."""
@@ -65,18 +70,17 @@ def _load_subscribers() -> list[str]:
 
 
 def _auto_send_screenshot():
-    """Capture and broadcast screenshot to all subscribers (if configured)."""
+    """Capture screenshot from localhost and send only to developer."""
     if not _BOT_TOKEN:
-        return
-    subs = _load_subscribers()
-    if not subs:
-        print("  [📸] No subscribers — skipping screenshot.")
         return
     try:
         from screenshot_alerts import quick_capture_and_send
-        print(f"\n[📸] Broadcasting screenshot to {len(subs)} subscribers...")
-        for chat_id in subs:
-            quick_capture_and_send(_BOT_TOKEN, str(chat_id), caption="🧪 Test alert screenshot")
+        print(f"\n[📸] Sending test screenshot to dev ({_DEV_CHAT_ID})...")
+        quick_capture_and_send(
+            _BOT_TOKEN, _DEV_CHAT_ID,
+            caption="🧪 Test alert screenshot",
+            url=_LOCALHOST_URL,
+        )
     except Exception as e:
         print(f"  [warn] Screenshot send failed: {e}")
 
@@ -651,19 +655,28 @@ def cmd_simulate_uav(polygons: dict):
 
 
 def cmd_send_screenshot():
-    """Manually capture and broadcast a screenshot."""
+    """Manually capture and send a screenshot to the developer."""
     if not _BOT_TOKEN:
         print("Screenshot not configured. Set CLEARMAP_BOT_TOKEN in config.env")
         return
-    subs = _load_subscribers()
-    if not subs:
-        print("No subscribers. Have someone /subscribe to the bot first.")
-        return
+
+    print("\nCapture from:")
+    print(f"  1) Localhost ({_LOCALHOST_URL})")
+    print(f"  2) Production ({_PROD_URL})")
+    choice = input("> ").strip()
+    if choice == "2":
+        url = _PROD_URL
+    else:
+        url = _LOCALHOST_URL
+
     try:
         from screenshot_alerts import quick_capture_and_send
-        print(f"Capturing and sending to {len(subs)} subscribers...")
-        for chat_id in subs:
-            quick_capture_and_send(_BOT_TOKEN, str(chat_id), caption="📸 Manual screenshot")
+        print(f"Capturing from {url} → sending to {_DEV_CHAT_ID}...")
+        quick_capture_and_send(
+            _BOT_TOKEN, _DEV_CHAT_ID,
+            caption="📸 Manual screenshot",
+            url=url,
+        )
     except Exception as e:
         print(f"Failed: {e}")
 
