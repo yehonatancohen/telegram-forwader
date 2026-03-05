@@ -56,10 +56,26 @@ ALERT_DURATION = 90         # 1.5 minutes → then after_alert
 AFTER_ALERT_SAFETY_TTL = 1800   # 30 min safety net (cleared by Oref signal normally)
 
 # ── Screenshot + Telegram bot config ────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = os.environ.get("CLEARMAP_BOT_TOKEN", "")
-MANAGER_CHAT_ID = os.environ.get("CLEARMAP_MANAGER_CHAT_ID", "")
-SCREENSHOT_COOLDOWN = int(os.environ.get("SCREENSHOT_COOLDOWN", "120"))  # seconds
-SCREENSHOT_URL = os.environ.get("SCREENSHOT_URL", "https://clearmap.co.il")
+
+def _load_config_env() -> dict[str, str]:
+    """Read key=value pairs from config.env (mounted into container)."""
+    result = {}
+    for p in (Path(__file__).parent / "config.env", Path("/app/config.env")):
+        if p.exists():
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                result[key.strip()] = val.strip()
+            break
+    return result
+
+_cfg_env = _load_config_env()
+TELEGRAM_BOT_TOKEN = os.environ.get("CLEARMAP_BOT_TOKEN", "") or _cfg_env.get("CLEARMAP_BOT_TOKEN", "")
+MANAGER_CHAT_ID = os.environ.get("CLEARMAP_MANAGER_CHAT_ID", "") or _cfg_env.get("CLEARMAP_MANAGER_CHAT_ID", "")
+SCREENSHOT_COOLDOWN = int(os.environ.get("SCREENSHOT_COOLDOWN", "") or _cfg_env.get("SCREENSHOT_COOLDOWN", "120"))
+SCREENSHOT_URL = os.environ.get("SCREENSHOT_URL", "") or _cfg_env.get("SCREENSHOT_URL", "https://clearmap.co.il")
 
 POLYGONS_FILE = Path(os.environ.get("POLYGONS_FILE", Path(__file__).parent / "polygons.json"))
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("SERVICE_ACCOUNT_FILE", Path(__file__).parent / "serviceAccountKey.json"))
