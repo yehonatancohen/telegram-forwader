@@ -31,6 +31,8 @@ services:
     image: yehonatancohen/clearmap-brain:latest
     container_name: clearmap-brain
     restart: unless-stopped
+    env_file:
+      - config.env
     volumes:
       - intel-data:/data
       - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
