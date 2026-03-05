@@ -38,14 +38,14 @@ FIREBASE_ALERTS_PATH = "/public_state/active_alerts.json"
 
 # ── Legend config ───────────────────────────────────────────────────────────
 
-# Status → (color, Hebrew label) — order matches frontend display priority
+# Status → (color, Hebrew label) — matching frontend legend in IntelBanner.tsx
 LEGEND_ITEMS = [
-    ("alert",          (239,  68,  68), "התרעה"),
-    ("uav",            (192, 132, 252), "כלי טיס עוין"),
+    ("alert",          (239,  68,  68), "התרעת צבע אדום"),
+    ("uav",            (192, 132, 252), "התראות כלי טיס עוין / כטב\"ם"),
     ("terrorist",      (153,  27,  27), "חדירת מחבלים"),
     ("pre_alert",      (255, 106,   0), "צפי להתרעה"),
-    ("after_alert",    (239, 100, 100), "להישאר בממ\"ד"),
-    ("telegram_intel", ( 56, 189, 248), "מודיעין"),
+    ("after_alert",    (239, 100, 100), "להישאר במרחב מוגן"),
+    ("telegram_intel", ( 56, 189, 248), "מודיעין (טלגרם)"),
 ]
 
 
