@@ -889,61 +889,18 @@ def capture_and_send_screenshot(state: dict):
         return
 
     try:
-        from screenshot_alerts import (
-            capture_screenshot as _cap_screenshot,
-            hide_ui_overlays,
-            overlay_logo_and_crop,
-            LOGO_DIR,
-            VIEWPORT_SIZE,
-            fetch_active_statuses,
-        )
-        from playwright.sync_api import sync_playwright
+        from screenshot_alerts import quick_capture_and_send
 
         log.info("📸 Capturing screenshot for manager...")
-
-        active_statuses = fetch_active_statuses()
         caption = _build_caption(state)
-        output_dir = Path(__file__).parent / "screenshots"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
-                device_scale_factor=2,
-            )
-            page = context.new_page()
-            page.goto(SCREENSHOT_URL, wait_until="networkidle")
-            page.wait_for_selector(".leaflet-container", timeout=15000)
-            time.sleep(3)
-
-            hide_ui_overlays(page)
-            time.sleep(0.5)
-
-            raw_path = _cap_screenshot(page, "dark", output_dir)
-            browser.close()
-
-        final_path = output_dir / "manager_latest.png"
-        dark_logo = LOGO_DIR / "logo-dark-theme.png"
-        overlay_logo_and_crop(
-            raw_path, dark_logo, final_path, 1080,
-            active_statuses=active_statuses, theme="dark",
+        ok = quick_capture_and_send(
+            TELEGRAM_BOT_TOKEN, MANAGER_CHAT_ID,
+            caption=caption, url=SCREENSHOT_URL,
         )
-        raw_path.unlink(missing_ok=True)
-
-        # Send via Telegram Bot API
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-        with open(final_path, "rb") as photo:
-            resp = requests.post(
-                url,
-                data={"chat_id": MANAGER_CHAT_ID, "caption": caption},
-                files={"photo": ("alert_screenshot.png", photo, "image/png")},
-                timeout=30,
-            )
-        if resp.ok:
+        if ok:
             log.info("📸 Screenshot sent to manager successfully.")
         else:
-            log.error("📸 Failed to send screenshot: %s", resp.text[:200])
+            log.error("📸 Failed to send screenshot.")
 
     except Exception as e:
         log.error("📸 Screenshot error: %s", e, exc_info=True)

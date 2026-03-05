@@ -363,5 +363,63 @@ def main():
     return dark_output, light_output
 
 
+def quick_capture_and_send(bot_token: str, chat_id: str,
+                           caption: str = "", url: str = DEFAULT_URL,
+                           size: int = 1080) -> bool:
+    """Capture a dark-theme screenshot with legend and send via Telegram Bot API.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        active_statuses = fetch_active_statuses()
+        output_dir = OUTPUT_DIR
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
+                device_scale_factor=2,
+            )
+            page = context.new_page()
+            page.goto(url, wait_until="networkidle")
+            page.wait_for_selector(".leaflet-container", timeout=15000)
+            time.sleep(3)
+
+            hide_ui_overlays(page)
+            time.sleep(0.5)
+
+            raw_path = capture_screenshot(page, "dark", output_dir)
+            browser.close()
+
+        final_path = output_dir / "send_latest.png"
+        dark_logo = LOGO_DIR / "logo-dark-theme.png"
+        overlay_logo_and_crop(
+            raw_path, dark_logo, final_path, size,
+            active_statuses=active_statuses, theme="dark",
+        )
+        raw_path.unlink(missing_ok=True)
+
+        # Send via Telegram Bot API
+        tg_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+        with open(final_path, "rb") as photo:
+            resp = http_requests.post(
+                tg_url,
+                data={"chat_id": chat_id, "caption": caption or "📸 Alert Screenshot"},
+                files={"photo": ("alert_screenshot.png", photo, "image/png")},
+                timeout=30,
+            )
+        if resp.ok:
+            print(f"  [OK] Screenshot sent to Telegram chat {chat_id}")
+            return True
+        else:
+            print(f"  [ERR] Telegram send failed: {resp.text[:200]}")
+            return False
+
+    except Exception as e:
+        print(f"  [ERR] Screenshot send error: {e}")
+        return False
+
+
 if __name__ == "__main__":
     main()

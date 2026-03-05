@@ -9,6 +9,7 @@ Usage:
 
 import json
 import math
+import os
 import re
 import subprocess
 import time
@@ -31,6 +32,36 @@ SERVICE_ACCOUNT = Path(__file__).parent / "serviceAccountKey.json"
 POLYGONS_FILE = Path(__file__).parent / "polygons.json"
 
 STATUSES = ["alert", "pre_alert", "after_alert", "telegram_intel", "uav", "terrorist"]
+
+# ── Screenshot config (loaded from config.env) ──────────────────────────────
+def _load_screenshot_config() -> tuple[str, str]:
+    """Read bot token and chat ID from config.env."""
+    for p in (Path(__file__).parent / "config.env",
+              Path(__file__).parent.parent / "config.env"):
+        if p.exists():
+            cfg = {}
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                cfg[key.strip()] = val.strip()
+            return cfg.get("CLEARMAP_BOT_TOKEN", ""), cfg.get("CLEARMAP_MANAGER_CHAT_ID", "")
+    return "", ""
+
+_BOT_TOKEN, _CHAT_ID = _load_screenshot_config()
+
+
+def _auto_send_screenshot():
+    """Send a screenshot to the manager after writing test alerts (if configured)."""
+    if not _BOT_TOKEN or not _CHAT_ID:
+        return
+    try:
+        from screenshot_alerts import quick_capture_and_send
+        print("\n[📸] Sending screenshot to manager...")
+        quick_capture_and_send(_BOT_TOKEN, _CHAT_ID, caption="🧪 Test alert screenshot")
+    except Exception as e:
+        print(f"  [warn] Screenshot send failed: {e}")
 
 INTEL_CHANNELS = ["beforeredalert", "yemennews7071"]
 
@@ -129,6 +160,7 @@ def _send_batch(cities: list[str], polygons: dict, status: str = None):
     ref = db.reference(FIREBASE_NODE)
     ref.update(batch)
     print(f"Written {len(batch)} alerts with status={status}")
+    _auto_send_screenshot()
 
 
 def cmd_add_alert(polygons: dict):
@@ -163,6 +195,7 @@ def cmd_add_alert(polygons: dict):
     ref = db.reference(f"{FIREBASE_NODE}/{_sanitize_fb_key(city_he)}")
     ref.set(payload)
     print(f"Written: {city_he} = {status}")
+    _auto_send_screenshot()
 
 
 def cmd_batch_alert(polygons: dict):
@@ -600,6 +633,19 @@ def cmd_simulate_uav(polygons: dict):
     print(f"\nDone! {city_count} UAV alerts in {len(valid_waves)} waves written to Firebase.")
 
 
+def cmd_send_screenshot():
+    """Manually capture and send a screenshot."""
+    if not _BOT_TOKEN or not _CHAT_ID:
+        print("Screenshot not configured. Set CLEARMAP_BOT_TOKEN and CLEARMAP_MANAGER_CHAT_ID in config.env")
+        return
+    try:
+        from screenshot_alerts import quick_capture_and_send
+        print("Capturing screenshot...")
+        quick_capture_and_send(_BOT_TOKEN, _CHAT_ID, caption="📸 Manual screenshot")
+    except Exception as e:
+        print(f"Failed: {e}")
+
+
 def cmd_salvo_scenario(polygons: dict):
     print("\nSalvo presets:")
     preset_names = list(SALVO_PRESETS.keys())
@@ -633,6 +679,7 @@ def main():
 
     print(f"Loaded {len(polygons)} cities.")
     print(f"Telegram inject target: docker exec {DOCKER_CONTAINER} → {DOCKER_DB_PATH}")
+    print(f"Screenshot bot: {'✅ configured' if _BOT_TOKEN else '❌ not configured (set CLEARMAP_BOT_TOKEN + CLEARMAP_MANAGER_CHAT_ID in config.env)'}")
     print("NOTE: For telegram testing (7/8), both containers must be RUNNING.\n")
 
     while True:
@@ -644,6 +691,8 @@ def main():
         print("--- Scenarios ---")
         print("11) Simulate UAV (Real-time/Fast-forward)")
         print("12) Salvo Attack")
+        print("--- Screenshot ---")
+        print("13) Send screenshot now")
         print("0) Exit")
         
         choice = input("> ").strip()
@@ -672,6 +721,8 @@ def main():
             cmd_simulate_uav(polygons)
         elif choice == "12":
             cmd_salvo_scenario(polygons)
+        elif choice == "13":
+            cmd_send_screenshot()
         elif choice == "0":
             break
         else:
