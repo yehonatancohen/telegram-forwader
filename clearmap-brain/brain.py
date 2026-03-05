@@ -6,10 +6,10 @@ for each alerted city, reads Telegram intel from intel.db, and pushes the
 current state to Firebase Realtime Database for the Next.js frontend.
 
 State machine:
-  telegram_yellow → pre_alert → alert → after_alert → (removed)
+  telegram_intel → pre_alert → alert → after_alert → (removed)
   
 Timings:
-  telegram_yellow: 2 min max, or until pre_alert arrives
+  telegram_intel: 2 min max, or until pre_alert arrives
   pre_alert:       12 min max, or until alert arrives
   alert:           1.5 min, then auto-transitions to after_alert
   after_alert:     persists until Oref clearance ("הסתיים"/"ניתן לצאת")
@@ -49,7 +49,7 @@ POLL_INTERVAL = 1.5        # seconds between API polls
 REQUEST_TIMEOUT = 5        # HTTP timeout in seconds
 
 # ── Timing constants ────────────────────────────────────────────────────────
-TELEGRAM_YELLOW_TTL = 120   # 2 minutes
+telegram_intel_TTL = 120   # 2 minutes
 PRE_ALERT_TTL = 720         # 12 minutes
 ALERT_DURATION = 90         # 1.5 minutes → then after_alert
 AFTER_ALERT_SAFETY_TTL = 1800   # 30 min safety net (cleared by Oref signal normally)
@@ -518,7 +518,7 @@ def _classify_alert_object(alert_obj: dict) -> str:
 
 
 # Priority: higher number = takes precedence when merging
-_STATUS_PRIORITY = {"telegram_yellow": 0, "after_alert": 1, "pre_alert": 2, "alert": 3, "uav": 3, "terrorist": 3}
+_STATUS_PRIORITY = {"telegram_intel": 0, "after_alert": 1, "pre_alert": 2, "alert": 3, "uav": 3, "terrorist": 3}
 
 
 def fetch_oref() -> list[tuple[str, str]]:
@@ -616,7 +616,7 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
     """
     Read recent messages from intel DB channels (beforeredalert, yemennews7071).
     Look for keywords indicating incoming alerts and extract location info.
-    Returns a list of (city_name_he, "telegram_yellow") tuples.
+    Returns a list of (city_name_he, "telegram_intel") tuples.
     """
     if not TELEGRAM_DB_PATH.exists():
         return []
@@ -628,7 +628,7 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
         cur = conn.cursor()
 
         now = time.time()
-        two_min_ago = now - TELEGRAM_YELLOW_TTL
+        two_min_ago = now - telegram_intel_TTL
 
         cur.execute("""
             SELECT es.raw_text, es.channel
@@ -655,7 +655,7 @@ def fetch_telegram_alerts(polygons: dict) -> list[tuple[str, str]]:
     except Exception as e:
         log.error("Telegram DB error: %s", e)
 
-    return [(c, "telegram_yellow") for c in cities]
+    return [(c, "telegram_intel") for c in cities]
 
 
 # ── State Machine ───────────────────────────────────────────────────────────
@@ -671,12 +671,12 @@ def update_state(
     Updates the internal state machine.
     
     State machine rules:
-    - telegram_yellow: 2 min timeout, or upgraded to pre_alert/alert
+    - telegram_intel: 2 min timeout, or upgraded to pre_alert/alert
     - pre_alert:       12 min timeout, or upgraded to alert
     - alert:           1.5 min duration, then auto → after_alert
     - after_alert:     persists until Oref "clear" signal. Re-alertable (→ alert)
     
-    Priority: alert > pre_alert > after_alert > telegram_yellow
+    Priority: alert > pre_alert > after_alert > telegram_intel
     """
     now = time.time()
     changed = False
@@ -698,7 +698,7 @@ def update_state(
             del state[city_he]
             changed = True
         
-        elif cs.state == "telegram_yellow" and elapsed >= TELEGRAM_YELLOW_TTL:
+        elif cs.state == "telegram_intel" and elapsed >= telegram_intel_TTL:
             # Telegram yellow expired → remove
             log.info("✅ TELEGRAM EXPIRED: %s (%.0fs)", city_he, elapsed)
             del state[city_he]
@@ -766,7 +766,7 @@ def update_state(
             # New city
             poly_data = polygons.get(city_he)
             if not poly_data:
-                if alert_type != "telegram_yellow":
+                if alert_type != "telegram_intel":
                     log.warning("No polygon data for '%s' — skipping.", city_he)
                 continue
             
@@ -774,7 +774,7 @@ def update_state(
             cs.state = alert_type
             state[city_he] = cs
             
-            emoji = {"telegram_yellow": "🟡", "pre_alert": "🟠", "alert": "🔴", "uav": "🟣", "terrorist": "🔶", "after_alert": "⚫"}.get(alert_type, "❓")
+            emoji = {"telegram_intel": "🟡", "pre_alert": "🟠", "alert": "🔴", "uav": "🟣", "terrorist": "🔶", "after_alert": "⚫"}.get(alert_type, "❓")
             log.info("%s NEW %s: %s (%s)", emoji, alert_type.upper(), city_he, poly_data["city_name"])
             changed = True
     
@@ -843,7 +843,7 @@ def main():
     sync_uav_tracks(uav_tracker)
 
     log.info("Polling Oref every %.1fs | alert=%ds pre_alert=%ds after_alert=until_clear telegram=%ds",
-             POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, TELEGRAM_YELLOW_TTL)
+             POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, telegram_intel_TTL)
 
     while True:
         try:

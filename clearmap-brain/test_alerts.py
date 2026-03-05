@@ -30,7 +30,7 @@ FIREBASE_UAV_NODE = "/public_state/uav_tracks"
 SERVICE_ACCOUNT = Path(__file__).parent / "serviceAccountKey.json"
 POLYGONS_FILE = Path(__file__).parent / "polygons.json"
 
-STATUSES = ["alert", "pre_alert", "after_alert", "telegram_yellow", "uav", "terrorist"]
+STATUSES = ["alert", "pre_alert", "after_alert", "telegram_intel", "uav", "terrorist"]
 
 INTEL_CHANNELS = ["beforeredalert", "yemennews7071"]
 
