@@ -39,8 +39,6 @@ services:
     environment:
       - TELEGRAM_DB_PATH=/data/intel.db
       - SERVICE_ACCOUNT_FILE=/app/serviceAccountKey.json
-      - CLEARMAP_BOT_TOKEN=${CLEARMAP_BOT_TOKEN}
-      - CLEARMAP_MANAGER_CHAT_ID=${CLEARMAP_MANAGER_CHAT_ID}
     depends_on:
       - telegram-intel
     logging:
