@@ -23,6 +23,7 @@ import re
 import sys
 import sqlite3
 import time
+import threading
 from pathlib import Path
 
 import firebase_admin
@@ -53,6 +54,12 @@ telegram_intel_TTL = 120   # 2 minutes
 PRE_ALERT_TTL = 720         # 12 minutes
 ALERT_DURATION = 90         # 1.5 minutes → then after_alert
 AFTER_ALERT_SAFETY_TTL = 1800   # 30 min safety net (cleared by Oref signal normally)
+
+# ── Screenshot + Telegram bot config ────────────────────────────────────────
+TELEGRAM_BOT_TOKEN = os.environ.get("CLEARMAP_BOT_TOKEN", "")
+MANAGER_CHAT_ID = os.environ.get("CLEARMAP_MANAGER_CHAT_ID", "")
+SCREENSHOT_COOLDOWN = int(os.environ.get("SCREENSHOT_COOLDOWN", "120"))  # seconds
+SCREENSHOT_URL = os.environ.get("SCREENSHOT_URL", "https://clearmap.co.il")
 
 POLYGONS_FILE = Path(os.environ.get("POLYGONS_FILE", Path(__file__).parent / "polygons.json"))
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("SERVICE_ACCOUNT_FILE", Path(__file__).parent / "serviceAccountKey.json"))
@@ -542,7 +549,11 @@ def fetch_oref() -> list[tuple[str, str]]:
     if not text or text in ("null", "[]", "{}"):
         return []
 
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        log.warning("Oref returned non-JSON (first 200 chars): %s", text[:200])
+        return []
 
     # Normalise: API can return a single object or an array of objects
     if isinstance(data, dict):
@@ -821,6 +832,109 @@ def sync_uav_tracks(tracker: UavTracker):
         log.info("Firebase UAV tracks synced: %d tracks.", len(payload))
 
 
+# ── Screenshot + Telegram Sending ───────────────────────────────────────────
+
+_STATUS_EMOJI = {
+    "alert": "🔴", "uav": "🟣", "terrorist": "🔶",
+    "pre_alert": "🟠", "after_alert": "⚫", "telegram_intel": "🔵",
+}
+_STATUS_LABEL = {
+    "alert": "התרעות", "uav": "כלי טיס", "terrorist": "חדירת מחבלים",
+    "pre_alert": "צפי", "after_alert": "הישארו בממ\"ד", "telegram_intel": "מודיעין",
+}
+
+_screenshot_lock = threading.Lock()
+
+
+def _build_caption(state: dict) -> str:
+    """Build a Hebrew caption summarising the active alert counts."""
+    from collections import Counter
+    counts = Counter(cs.state for cs in state.values())
+    parts = []
+    for status in ("alert", "uav", "terrorist", "pre_alert", "after_alert", "telegram_intel"):
+        n = counts.get(status, 0)
+        if n:
+            emoji = _STATUS_EMOJI.get(status, "❓")
+            label = _STATUS_LABEL.get(status, status)
+            parts.append(f"{emoji} {n} {label}")
+    return " | ".join(parts) if parts else "אין התרעות פעילות"
+
+
+def capture_and_send_screenshot(state: dict):
+    """Capture a screenshot and send it to the manager via Telegram Bot API.
+
+    Runs in a background thread — must not raise.
+    """
+    if not TELEGRAM_BOT_TOKEN or not MANAGER_CHAT_ID:
+        return
+
+    if not _screenshot_lock.acquire(blocking=False):
+        log.debug("Screenshot already in progress — skipping.")
+        return
+
+    try:
+        from screenshot_alerts import (
+            capture_screenshot as _cap_screenshot,
+            hide_ui_overlays,
+            overlay_logo_and_crop,
+            LOGO_DIR,
+            VIEWPORT_SIZE,
+            fetch_active_statuses,
+        )
+        from playwright.sync_api import sync_playwright
+
+        log.info("📸 Capturing screenshot for manager...")
+
+        active_statuses = fetch_active_statuses()
+        caption = _build_caption(state)
+        output_dir = Path(__file__).parent / "screenshots"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
+                device_scale_factor=2,
+            )
+            page = context.new_page()
+            page.goto(SCREENSHOT_URL, wait_until="networkidle")
+            page.wait_for_selector(".leaflet-container", timeout=15000)
+            time.sleep(3)
+
+            hide_ui_overlays(page)
+            time.sleep(0.5)
+
+            raw_path = _cap_screenshot(page, "dark", output_dir)
+            browser.close()
+
+        final_path = output_dir / "manager_latest.png"
+        dark_logo = LOGO_DIR / "logo-dark-theme.png"
+        overlay_logo_and_crop(
+            raw_path, dark_logo, final_path, 1080,
+            active_statuses=active_statuses, theme="dark",
+        )
+        raw_path.unlink(missing_ok=True)
+
+        # Send via Telegram Bot API
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        with open(final_path, "rb") as photo:
+            resp = requests.post(
+                url,
+                data={"chat_id": MANAGER_CHAT_ID, "caption": caption},
+                files={"photo": ("alert_screenshot.png", photo, "image/png")},
+                timeout=30,
+            )
+        if resp.ok:
+            log.info("📸 Screenshot sent to manager successfully.")
+        else:
+            log.error("📸 Failed to send screenshot: %s", resp.text[:200])
+
+    except Exception as e:
+        log.error("📸 Screenshot error: %s", e, exc_info=True)
+    finally:
+        _screenshot_lock.release()
+
+
 # ── Main Loop ───────────────────────────────────────────────────────────────
 
 
@@ -837,6 +951,7 @@ def main():
     state: dict[str, CityState] = {}
     centroids = {name: _compute_centroid(p["polygon"]) for name, p in polygons.items() if p.get("polygon")}
     uav_tracker = UavTracker()
+    last_screenshot_time = 0.0  # epoch timestamp of last screenshot
 
     # Clear any stale data on startup
     sync_to_firebase(state)
@@ -844,6 +959,10 @@ def main():
 
     log.info("Polling Oref every %.1fs | alert=%ds pre_alert=%ds after_alert=until_clear telegram=%ds",
              POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, telegram_intel_TTL)
+    if TELEGRAM_BOT_TOKEN and MANAGER_CHAT_ID:
+        log.info("📸 Screenshot → Telegram enabled (cooldown=%ds)", SCREENSHOT_COOLDOWN)
+    else:
+        log.info("📸 Screenshot → Telegram disabled (set CLEARMAP_BOT_TOKEN + CLEARMAP_MANAGER_CHAT_ID)")
 
     while True:
         try:
@@ -857,6 +976,18 @@ def main():
             if changed or tracks_changed:
                 sync_to_firebase(state)
                 sync_uav_tracks(uav_tracker)
+
+                # Send screenshot to manager when there are active alerts
+                now_ts = time.time()
+                if (state and TELEGRAM_BOT_TOKEN and MANAGER_CHAT_ID
+                        and now_ts - last_screenshot_time >= SCREENSHOT_COOLDOWN):
+                    last_screenshot_time = now_ts
+                    state_snapshot = {k: v for k, v in state.items()}  # shallow copy
+                    threading.Thread(
+                        target=capture_and_send_screenshot,
+                        args=(state_snapshot,),
+                        daemon=True,
+                    ).start()
 
         except requests.exceptions.RequestException as e:
             log.error("HTTP error: %s", e)

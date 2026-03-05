@@ -1,2 +1,4 @@
 firebase-admin
 requests
+playwright
+Pillow
