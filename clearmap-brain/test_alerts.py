@@ -34,8 +34,8 @@ POLYGONS_FILE = Path(__file__).parent / "polygons.json"
 STATUSES = ["alert", "pre_alert", "after_alert", "telegram_intel", "uav", "terrorist"]
 
 # ── Screenshot config (loaded from config.env) ──────────────────────────────
-def _load_screenshot_config() -> tuple[str, str]:
-    """Read bot token and chat ID from config.env."""
+def _load_screenshot_config() -> str:
+    """Read bot token from config.env."""
     for p in (Path(__file__).parent / "config.env",
               Path(__file__).parent.parent / "config.env"):
         if p.exists():
@@ -46,20 +46,37 @@ def _load_screenshot_config() -> tuple[str, str]:
                     continue
                 key, _, val = line.partition("=")
                 cfg[key.strip()] = val.strip()
-            return cfg.get("CLEARMAP_BOT_TOKEN", ""), cfg.get("CLEARMAP_MANAGER_CHAT_ID", "")
-    return "", ""
+            return cfg.get("CLEARMAP_BOT_TOKEN", "")
+    return ""
 
-_BOT_TOKEN, _CHAT_ID = _load_screenshot_config()
+_BOT_TOKEN = _load_screenshot_config()
+
+SUBSCRIBERS_FILE = Path(__file__).parent / "subscribers.json"
+
+
+def _load_subscribers() -> list[str]:
+    """Load subscriber chat IDs from disk."""
+    if SUBSCRIBERS_FILE.exists():
+        try:
+            return json.loads(SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
 
 
 def _auto_send_screenshot():
-    """Send a screenshot to the manager after writing test alerts (if configured)."""
-    if not _BOT_TOKEN or not _CHAT_ID:
+    """Capture and broadcast screenshot to all subscribers (if configured)."""
+    if not _BOT_TOKEN:
+        return
+    subs = _load_subscribers()
+    if not subs:
+        print("  [📸] No subscribers — skipping screenshot.")
         return
     try:
         from screenshot_alerts import quick_capture_and_send
-        print("\n[📸] Sending screenshot to manager...")
-        quick_capture_and_send(_BOT_TOKEN, _CHAT_ID, caption="🧪 Test alert screenshot")
+        print(f"\n[📸] Broadcasting screenshot to {len(subs)} subscribers...")
+        for chat_id in subs:
+            quick_capture_and_send(_BOT_TOKEN, str(chat_id), caption="🧪 Test alert screenshot")
     except Exception as e:
         print(f"  [warn] Screenshot send failed: {e}")
 
@@ -634,14 +651,19 @@ def cmd_simulate_uav(polygons: dict):
 
 
 def cmd_send_screenshot():
-    """Manually capture and send a screenshot."""
-    if not _BOT_TOKEN or not _CHAT_ID:
-        print("Screenshot not configured. Set CLEARMAP_BOT_TOKEN and CLEARMAP_MANAGER_CHAT_ID in config.env")
+    """Manually capture and broadcast a screenshot."""
+    if not _BOT_TOKEN:
+        print("Screenshot not configured. Set CLEARMAP_BOT_TOKEN in config.env")
+        return
+    subs = _load_subscribers()
+    if not subs:
+        print("No subscribers. Have someone /subscribe to the bot first.")
         return
     try:
         from screenshot_alerts import quick_capture_and_send
-        print("Capturing screenshot...")
-        quick_capture_and_send(_BOT_TOKEN, _CHAT_ID, caption="📸 Manual screenshot")
+        print(f"Capturing and sending to {len(subs)} subscribers...")
+        for chat_id in subs:
+            quick_capture_and_send(_BOT_TOKEN, str(chat_id), caption="📸 Manual screenshot")
     except Exception as e:
         print(f"Failed: {e}")
 
@@ -679,7 +701,10 @@ def main():
 
     print(f"Loaded {len(polygons)} cities.")
     print(f"Telegram inject target: docker exec {DOCKER_CONTAINER} → {DOCKER_DB_PATH}")
-    print(f"Screenshot bot: {'✅ configured' if _BOT_TOKEN else '❌ not configured (set CLEARMAP_BOT_TOKEN + CLEARMAP_MANAGER_CHAT_ID in config.env)'}")
+    print(f"Screenshot bot: {'✅ configured' if _BOT_TOKEN else '❌ not configured (set CLEARMAP_BOT_TOKEN in config.env)'}")
+    subs = _load_subscribers()
+    if subs:
+        print(f"  📋 {len(subs)} subscribers will receive screenshots")
     print("NOTE: For telegram testing (7/8), both containers must be RUNNING.\n")
 
     while True:

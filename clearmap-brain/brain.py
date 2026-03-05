@@ -73,7 +73,6 @@ def _load_config_env() -> dict[str, str]:
 
 _cfg_env = _load_config_env()
 TELEGRAM_BOT_TOKEN = os.environ.get("CLEARMAP_BOT_TOKEN", "") or _cfg_env.get("CLEARMAP_BOT_TOKEN", "")
-MANAGER_CHAT_ID = os.environ.get("CLEARMAP_MANAGER_CHAT_ID", "") or _cfg_env.get("CLEARMAP_MANAGER_CHAT_ID", "")
 SCREENSHOT_COOLDOWN = int(os.environ.get("SCREENSHOT_COOLDOWN", "") or _cfg_env.get("SCREENSHOT_COOLDOWN", "120"))
 SCREENSHOT_URL = os.environ.get("SCREENSHOT_URL", "") or _cfg_env.get("SCREENSHOT_URL", "https://clearmap.co.il")
 
@@ -848,7 +847,7 @@ def sync_uav_tracks(tracker: UavTracker):
         log.info("Firebase UAV tracks synced: %d tracks.", len(payload))
 
 
-# ── Screenshot + Telegram Sending ───────────────────────────────────────────
+# ── Screenshot + Telegram Bot Broadcast ─────────────────────────────────────
 
 _STATUS_EMOJI = {
     "alert": "🔴", "uav": "🟣", "terrorist": "🔶",
@@ -860,6 +859,138 @@ _STATUS_LABEL = {
 }
 
 _screenshot_lock = threading.Lock()
+
+SUBSCRIBERS_FILE = Path(os.environ.get(
+    "SUBSCRIBERS_FILE",
+    Path(__file__).parent / "subscribers.json",
+))
+
+
+def _load_subscribers() -> set[str]:
+    """Load subscriber chat IDs from disk."""
+    if SUBSCRIBERS_FILE.exists():
+        try:
+            data = json.loads(SUBSCRIBERS_FILE.read_text(encoding="utf-8"))
+            subs = set(str(cid) for cid in data)
+            log.info("📋 Loaded %d subscribers from %s", len(subs), SUBSCRIBERS_FILE)
+            return subs
+        except Exception as e:
+            log.error("📋 Failed to load subscribers: %s", e)
+    return set()
+
+
+def _save_subscribers(subs: set[str]):
+    """Persist subscriber chat IDs to disk."""
+    try:
+        SUBSCRIBERS_FILE.write_text(
+            json.dumps(sorted(subs), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        log.debug("📋 Saved %d subscribers to %s", len(subs), SUBSCRIBERS_FILE)
+    except Exception as e:
+        log.error("📋 Failed to save subscribers: %s", e)
+
+
+_subscribers: set[str] = set()
+_subscribers_lock = threading.Lock()
+
+
+def _bot_send_message(chat_id: str, text: str):
+    """Send a text message via Telegram Bot API."""
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        if not resp.ok:
+            log.warning("Bot sendMessage failed for %s: %s", chat_id, resp.text[:150])
+    except Exception as e:
+        log.error("Bot sendMessage error for %s: %s", chat_id, e)
+
+
+def _handle_bot_command(chat_id: str, text: str, first_name: str):
+    """Handle an incoming bot command."""
+    cmd = text.strip().lower().split()[0] if text else ""
+
+    if cmd in ("/start", "/subscribe"):
+        with _subscribers_lock:
+            if chat_id in _subscribers:
+                _bot_send_message(chat_id, "✅ אתה כבר רשום לעדכונים.")
+                log.info("📋 %s (%s) already subscribed", first_name, chat_id)
+            else:
+                _subscribers.add(chat_id)
+                _save_subscribers(_subscribers)
+                _bot_send_message(
+                    chat_id,
+                    "✅ נרשמת בהצלחה!\n\n"
+                    "תקבל צילום מסך של המפה עם כל שינוי בהתרעות.\n"
+                    "לביטול רישום: /unsubscribe",
+                )
+                log.info("📋 ✅ NEW subscriber: %s (%s) — total: %d",
+                         first_name, chat_id, len(_subscribers))
+
+    elif cmd == "/unsubscribe":
+        with _subscribers_lock:
+            if chat_id in _subscribers:
+                _subscribers.discard(chat_id)
+                _save_subscribers(_subscribers)
+                _bot_send_message(chat_id, "❌ הרישום בוטל. לא תקבל עוד עדכונים.\nלחזור: /subscribe")
+                log.info("📋 ❌ Unsubscribed: %s (%s) — total: %d",
+                         first_name, chat_id, len(_subscribers))
+            else:
+                _bot_send_message(chat_id, "אינך רשום לעדכונים.\nלהרשם: /subscribe")
+
+    elif cmd == "/status":
+        with _subscribers_lock:
+            n = len(_subscribers)
+        _bot_send_message(chat_id, f"📊 מנויים: {n}\n🤖 הבוט פעיל.")
+        log.debug("📋 /status from %s (%s)", first_name, chat_id)
+
+    else:
+        _bot_send_message(
+            chat_id,
+            "🤖 <b>ClearMap Bot</b>\n\n"
+            "/subscribe — הרשם לעדכוני מפה\n"
+            "/unsubscribe — בטל רישום\n"
+            "/status — סטטוס הבוט",
+        )
+
+
+def _bot_poller():
+    """Background thread: poll Telegram getUpdates for bot commands."""
+    log.info("🤖 Bot poller started (token=%s...)", TELEGRAM_BOT_TOKEN[:12])
+    offset = 0
+
+    while True:
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={"offset": offset, "timeout": 30, "allowed_updates": '["message"]'},
+                timeout=35,
+            )
+            if not resp.ok:
+                log.warning("🤖 getUpdates HTTP %d: %s", resp.status_code, resp.text[:150])
+                time.sleep(5)
+                continue
+
+            data = resp.json()
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                text = msg.get("text", "")
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+                first_name = msg.get("from", {}).get("first_name", "?")
+
+                if chat_id and text.startswith("/"):
+                    log.debug("🤖 Command from %s (%s): %s", first_name, chat_id, text)
+                    _handle_bot_command(chat_id, text, first_name)
+
+        except requests.exceptions.Timeout:
+            continue  # long-poll timeout is normal
+        except Exception as e:
+            log.error("🤖 Bot poller error: %s", e)
+            time.sleep(5)
 
 
 def _build_caption(state: dict) -> str:
@@ -876,34 +1007,108 @@ def _build_caption(state: dict) -> str:
     return " | ".join(parts) if parts else "אין התרעות פעילות"
 
 
-def capture_and_send_screenshot(state: dict):
-    """Capture a screenshot and send it to the manager via Telegram Bot API.
+def _send_photo_to_chat(chat_id: str, photo_path: Path, caption: str) -> bool:
+    """Send a photo to a single chat. Returns True on success."""
+    try:
+        with open(photo_path, "rb") as f:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                data={"chat_id": chat_id, "caption": caption},
+                files={"photo": ("alert.png", f, "image/png")},
+                timeout=30,
+            )
+        if resp.ok:
+            return True
+        else:
+            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            # Auto-remove subscribers who blocked the bot
+            if body.get("error_code") in (403, 400):
+                log.warning("📸 Removing blocked/invalid subscriber %s: %s",
+                            chat_id, body.get("description", ""))
+                with _subscribers_lock:
+                    _subscribers.discard(chat_id)
+                    _save_subscribers(_subscribers)
+            else:
+                log.warning("📸 sendPhoto failed for %s: %s", chat_id, resp.text[:150])
+            return False
+    except Exception as e:
+        log.error("📸 sendPhoto error for %s: %s", chat_id, e)
+        return False
+
+
+def capture_and_broadcast(state: dict):
+    """Capture a screenshot and broadcast it to all subscribers.
 
     Runs in a background thread — must not raise.
     """
-    if not TELEGRAM_BOT_TOKEN or not MANAGER_CHAT_ID:
+    with _subscribers_lock:
+        recipients = set(_subscribers)
+
+    if not recipients:
+        log.debug("📸 No subscribers — skipping screenshot.")
         return
 
     if not _screenshot_lock.acquire(blocking=False):
-        log.debug("Screenshot already in progress — skipping.")
+        log.debug("📸 Screenshot already in progress — skipping.")
         return
 
     try:
-        from screenshot_alerts import quick_capture_and_send
-
-        log.info("📸 Capturing screenshot for manager...")
-        caption = _build_caption(state)
-        ok = quick_capture_and_send(
-            TELEGRAM_BOT_TOKEN, MANAGER_CHAT_ID,
-            caption=caption, url=SCREENSHOT_URL,
+        from screenshot_alerts import (
+            capture_screenshot as _cap_screenshot,
+            hide_ui_overlays,
+            overlay_logo_and_crop,
+            fetch_active_statuses,
+            LOGO_DIR,
+            VIEWPORT_SIZE,
         )
-        if ok:
-            log.info("📸 Screenshot sent to manager successfully.")
-        else:
-            log.error("📸 Failed to send screenshot.")
+        from playwright.sync_api import sync_playwright
+
+        log.info("📸 Capturing screenshot for %d subscribers...", len(recipients))
+
+        active_statuses = fetch_active_statuses()
+        caption = _build_caption(state)
+        output_dir = Path(__file__).parent / "screenshots"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
+                device_scale_factor=2,
+            )
+            page = context.new_page()
+            page.goto(SCREENSHOT_URL, wait_until="networkidle")
+            page.wait_for_selector(".leaflet-container", timeout=15000)
+            time.sleep(3)
+
+            hide_ui_overlays(page)
+            time.sleep(0.5)
+
+            raw_path = _cap_screenshot(page, "dark", output_dir)
+            browser.close()
+
+        final_path = output_dir / "broadcast_latest.png"
+        dark_logo = LOGO_DIR / "logo-dark-theme.png"
+        overlay_logo_and_crop(
+            raw_path, dark_logo, final_path, 1080,
+            active_statuses=active_statuses, theme="dark",
+        )
+        raw_path.unlink(missing_ok=True)
+        log.info("📸 Screenshot captured — broadcasting to %d subscribers...", len(recipients))
+
+        # Broadcast to all subscribers
+        ok_count = 0
+        fail_count = 0
+        for chat_id in recipients:
+            if _send_photo_to_chat(chat_id, final_path, caption):
+                ok_count += 1
+            else:
+                fail_count += 1
+
+        log.info("📸 Broadcast done: %d sent, %d failed", ok_count, fail_count)
 
     except Exception as e:
-        log.error("📸 Screenshot error: %s", e, exc_info=True)
+        log.error("📸 Screenshot/broadcast error: %s", e, exc_info=True)
     finally:
         _screenshot_lock.release()
 
@@ -924,7 +1129,19 @@ def main():
     state: dict[str, CityState] = {}
     centroids = {name: _compute_centroid(p["polygon"]) for name, p in polygons.items() if p.get("polygon")}
     uav_tracker = UavTracker()
-    last_screenshot_time = 0.0  # epoch timestamp of last screenshot
+    last_screenshot_time = 0.0
+
+    # Load subscribers
+    global _subscribers
+    _subscribers = _load_subscribers()
+
+    # Start bot command poller in background
+    if TELEGRAM_BOT_TOKEN:
+        threading.Thread(target=_bot_poller, daemon=True).start()
+        log.info("📸 Screenshot broadcast enabled (cooldown=%ds, subscribers=%d)",
+                 SCREENSHOT_COOLDOWN, len(_subscribers))
+    else:
+        log.info("📸 Screenshot broadcast disabled (set CLEARMAP_BOT_TOKEN)")
 
     # Clear any stale data on startup
     sync_to_firebase(state)
@@ -932,10 +1149,6 @@ def main():
 
     log.info("Polling Oref every %.1fs | alert=%ds pre_alert=%ds after_alert=until_clear telegram=%ds",
              POLL_INTERVAL, ALERT_DURATION, PRE_ALERT_TTL, telegram_intel_TTL)
-    if TELEGRAM_BOT_TOKEN and MANAGER_CHAT_ID:
-        log.info("📸 Screenshot → Telegram enabled (cooldown=%ds)", SCREENSHOT_COOLDOWN)
-    else:
-        log.info("📸 Screenshot → Telegram disabled (set CLEARMAP_BOT_TOKEN + CLEARMAP_MANAGER_CHAT_ID)")
 
     while True:
         try:
@@ -950,14 +1163,14 @@ def main():
                 sync_to_firebase(state)
                 sync_uav_tracks(uav_tracker)
 
-                # Send screenshot to manager when there are active alerts
+                # Broadcast screenshot when there are active alerts
                 now_ts = time.time()
-                if (state and TELEGRAM_BOT_TOKEN and MANAGER_CHAT_ID
+                if (state and TELEGRAM_BOT_TOKEN
                         and now_ts - last_screenshot_time >= SCREENSHOT_COOLDOWN):
                     last_screenshot_time = now_ts
-                    state_snapshot = {k: v for k, v in state.items()}  # shallow copy
+                    state_snapshot = {k: v for k, v in state.items()}
                     threading.Thread(
-                        target=capture_and_send_screenshot,
+                        target=capture_and_broadcast,
                         args=(state_snapshot,),
                         daemon=True,
                     ).start()
@@ -974,3 +1187,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
