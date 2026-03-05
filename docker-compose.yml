@@ -36,10 +36,6 @@ services:
     volumes:
       - intel-data:/data
       - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
-      - ./config.env:/app/config.env:ro
-    environment:
-      - TELEGRAM_DB_PATH=/data/intel.db
-      - SERVICE_ACCOUNT_FILE=/app/serviceAccountKey.json
     depends_on:
       - telegram-intel
     logging:
