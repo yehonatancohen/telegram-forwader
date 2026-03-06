@@ -141,7 +141,7 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
     w, h = img.size
 
     # Font sizing — relative to image
-    font_size = max(14, int(w * 0.018))
+    font_size = max(18, int(w * 0.024))
     font = _load_hebrew_font(font_size)
     count_font = _load_hebrew_font(int(font_size * 0.9))
     dot_radius = max(5, int(font_size * 0.4))
@@ -230,7 +230,7 @@ def draw_uav_disclaimer(img: Image.Image, theme: str) -> Image.Image:
     text = "* שימו לב: מיקומי כלי הטיס הם בגדר השערת המערכת בלבד ואין להתבסס עליהם."
     visual_text = _bidi_text(text)
     
-    font_size = max(11, int(w * 0.015))
+    font_size = max(15, int(w * 0.022))
     font = _load_hebrew_font(font_size)
     padding = int(w * 0.012)
     
