@@ -29,7 +29,10 @@ if sys.platform == "win32":
 
 DEFAULT_URL = "https://clearmap.co.il"
 VIEWPORT_SIZE = 900  # square viewport
-LOGO_DIR = Path(__file__).parent.parent.parent / "clear-map" / "public"
+# Logo directory — works locally (relative path to clear-map) and in Docker (bundled)
+_LOCAL_LOGO_DIR = Path(__file__).parent.parent.parent / "clear-map" / "public"
+_DOCKER_LOGO_DIR = Path(__file__).parent / "public"
+LOGO_DIR = _LOCAL_LOGO_DIR if _LOCAL_LOGO_DIR.exists() else _DOCKER_LOGO_DIR
 OUTPUT_DIR = Path(__file__).parent / "screenshots"
 
 # Firebase REST API for fetching active alerts
@@ -38,14 +41,14 @@ FIREBASE_ALERTS_PATH = "/public_state/active_alerts.json"
 
 # ── Legend config ───────────────────────────────────────────────────────────
 
-# Status → (color, Hebrew label) — matching frontend legend in IntelBanner.tsx
+# Status → (color, Hebrew label) — matching the BOTTOM PANEL in IntelBanner.tsx
 LEGEND_ITEMS = [
-    ("alert",          (239,  68,  68), "התרעת צבע אדום"),
-    ("uav",            (192, 132, 252), "התראות כלי טיס עוין / כטב\"ם"),
+    ("alert",          (239,  68,  68), "התרעות ירי רקטות וטילים"),
+    ("uav",            (192, 132, 252), "התרעות חדירת כלי טיס עוין"),
     ("terrorist",      (153,  27,  27), "חדירת מחבלים"),
-    ("pre_alert",      (255, 106,   0), "צפי להתרעה"),
-    ("after_alert",    (239, 100, 100), "להישאר במרחב מוגן"),
-    ("telegram_intel", ( 56, 189, 248), "מודיעין (טלגרם)"),
+    ("pre_alert",      (255, 106,   0), "התרעות מוקדמות"),
+    ("after_alert",    (239, 100, 100), "להישאר בממ\"ד"),
+    ("telegram_intel", ( 56, 189, 248), "מודיעין"),
 ]
 
 
@@ -81,8 +84,11 @@ def _load_hebrew_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont
     return ImageFont.load_default()
 
 
-def fetch_active_statuses() -> set[str]:
-    """Fetch currently active alert statuses from Firebase REST API."""
+def fetch_active_statuses() -> tuple[set[str], dict[str, int]]:
+    """Fetch currently active alert statuses and counts from Firebase REST API.
+
+    Returns (set_of_statuses, {status: count}).
+    """
     try:
         resp = http_requests.get(
             f"{FIREBASE_DB_URL}{FIREBASE_ALERTS_PATH}",
@@ -91,19 +97,26 @@ def fetch_active_statuses() -> set[str]:
         resp.raise_for_status()
         data = resp.json()
         if not data:
-            return set()
-        return {v.get("status", "alert") for v in data.values() if isinstance(v, dict)}
+            return set(), {}
+        counts: dict[str, int] = {}
+        for v in data.values():
+            if isinstance(v, dict):
+                s = v.get("status", "alert")
+                counts[s] = counts.get(s, 0) + 1
+        return set(counts.keys()), counts
     except Exception as e:
         print(f"  [warn] Could not fetch active statuses: {e}")
-        return set()
+        return set(), {}
 
 
-def draw_legend(img: Image.Image, active_statuses: set[str], theme: str) -> Image.Image:
+def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
+                counts: dict[str, int] | None = None) -> Image.Image:
     """Draw a small legend overlay in the bottom-left corner showing active alert types.
 
     Only draws legend items whose status is in active_statuses.
+    When counts is provided, the count is shown next to each label.
     """
-    items = [(color, label) for status, color, label in LEGEND_ITEMS
+    items = [(color, label, status) for status, color, label in LEGEND_ITEMS
              if status in active_statuses]
 
     if not items:
@@ -115,16 +128,21 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str) -> Imag
     # Font sizing — relative to image
     font_size = max(14, int(w * 0.018))
     font = _load_hebrew_font(font_size)
+    count_font = _load_hebrew_font(int(font_size * 0.9))
     dot_radius = max(5, int(font_size * 0.4))
     row_height = int(font_size * 1.8)
     padding = int(w * 0.02)
     inner_pad = int(w * 0.012)
+    count_pad = int(w * 0.008)  # gap between count badge and label
 
     # Measure text widths to determine legend box size
     dummy_draw = ImageDraw.Draw(img)
     max_text_w = 0
-    for _, label in items:
-        visual_label = _bidi_text(label)
+    for _, label, status in items:
+        # Build display text: "count label" (RTL)
+        cnt = counts.get(status, 0) if counts else 0
+        display = f"{cnt} {label}" if cnt else label
+        visual_label = _bidi_text(display)
         bbox = dummy_draw.textbbox((0, 0), visual_label, font=font)
         text_w = bbox[2] - bbox[0]
         max_text_w = max(max_text_w, text_w)
@@ -151,7 +169,7 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str) -> Imag
     draw = ImageDraw.Draw(img)
 
     # Draw each legend row (RTL: dot on right, text to its left)
-    for i, (color, label) in enumerate(items):
+    for i, (color, label, status) in enumerate(items):
         row_y = ly + padding + i * row_height
 
         # Dot position — right side of the legend box
@@ -164,8 +182,10 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str) -> Imag
             fill=(*color, 255),
         )
 
-        # Text to the left of the dot (RTL layout)
-        visual_label = _bidi_text(label)
+        # Build display text with count
+        cnt = counts.get(status, 0) if counts else 0
+        display = f"{cnt} {label}" if cnt else label
+        visual_label = _bidi_text(display)
         bbox = draw.textbbox((0, 0), visual_label, font=font)
         text_w = bbox[2] - bbox[0]
         text_x = dot_cx - dot_radius - inner_pad - text_w
@@ -246,8 +266,9 @@ def capture_screenshot(page, theme: str, output_dir: Path) -> Path:
 
 def overlay_logo_and_crop(screenshot_path: Path, logo_path: Path, output_path: Path,
                           size: int, active_statuses: set[str] | None = None,
-                          theme: str = "dark") -> Path:
-    """Overlay logo in top-right corner, add legend, and crop to square."""
+                          theme: str = "dark",
+                          counts: dict[str, int] | None = None) -> Path:
+    """Overlay logo in top-right corner, add legend with counts, and crop to square."""
     img = Image.open(screenshot_path).convert("RGBA")
 
     # Center-crop to square
@@ -281,7 +302,7 @@ def overlay_logo_and_crop(screenshot_path: Path, logo_path: Path, output_path: P
 
     # Draw legend overlay if we have active statuses
     if active_statuses:
-        img = draw_legend(img, active_statuses, theme)
+        img = draw_legend(img, active_statuses, theme, counts=counts)
 
     # Convert to RGB and save
     img = img.convert("RGB")
@@ -304,11 +325,13 @@ def main():
 
     # Fetch active alert statuses for the legend
     active_statuses: set[str] = set()
+    status_counts: dict[str, int] = {}
     if not args.no_legend:
         print("[+] Fetching active alert statuses...")
-        active_statuses = fetch_active_statuses()
+        active_statuses, status_counts = fetch_active_statuses()
         if active_statuses:
             print(f"  Active types: {', '.join(sorted(active_statuses))}")
+            print(f"  Counts: {status_counts}")
         else:
             print("  No active alerts — legend will be skipped.")
 
@@ -348,7 +371,8 @@ def main():
         dark_logo = LOGO_DIR / "logo-dark-theme.png"
         dark_output = output_dir / f"alert_dark_{timestamp}.png"
         overlay_logo_and_crop(dark_raw, dark_logo, dark_output, args.size,
-                              active_statuses=active_statuses, theme="dark")
+                              active_statuses=active_statuses, theme="dark",
+                              counts=status_counts)
         print(f"  [OK] Saved: {dark_output}")
 
         # -- Light theme screenshot ------------------------------------------
@@ -365,7 +389,8 @@ def main():
         light_logo = LOGO_DIR / "logo-light-theme.png"
         light_output = output_dir / f"alert_light_{timestamp}.png"
         overlay_logo_and_crop(light_raw, light_logo, light_output, args.size,
-                              active_statuses=active_statuses, theme="light")
+                              active_statuses=active_statuses, theme="light",
+                              counts=status_counts)
         print(f"  [OK] Saved: {light_output}")
 
         # Cleanup raw files
@@ -387,7 +412,7 @@ def quick_capture_and_send(bot_token: str, chat_id: str,
     Returns True on success, False on failure.
     """
     try:
-        active_statuses = fetch_active_statuses()
+        active_statuses, status_counts = fetch_active_statuses()
         output_dir = OUTPUT_DIR
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -398,8 +423,8 @@ def quick_capture_and_send(bot_token: str, chat_id: str,
                 device_scale_factor=2,
             )
             page = context.new_page()
-            page.goto(url, wait_until="networkidle")
-            page.wait_for_selector(".leaflet-container", timeout=15000)
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_selector(".leaflet-container", timeout=20000)
             time.sleep(3)
 
             hide_ui_overlays(page)
@@ -413,6 +438,7 @@ def quick_capture_and_send(bot_token: str, chat_id: str,
         overlay_logo_and_crop(
             raw_path, dark_logo, final_path, size,
             active_statuses=active_statuses, theme="dark",
+            counts=status_counts,
         )
         raw_path.unlink(missing_ok=True)
 

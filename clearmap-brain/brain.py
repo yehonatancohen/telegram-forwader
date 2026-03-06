@@ -1068,7 +1068,7 @@ def capture_and_broadcast(state: dict):
 
         log.info("📸 Capturing screenshot for %d subscribers...", len(recipients))
 
-        active_statuses = fetch_active_statuses()
+        active_statuses, status_counts = fetch_active_statuses()
         caption = _build_caption(state)
         output_dir = Path(__file__).parent / "screenshots"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1080,8 +1080,8 @@ def capture_and_broadcast(state: dict):
                 device_scale_factor=2,
             )
             page = context.new_page()
-            page.goto(SCREENSHOT_URL, wait_until="networkidle")
-            page.wait_for_selector(".leaflet-container", timeout=15000)
+            page.goto(SCREENSHOT_URL, wait_until="networkidle", timeout=30000)
+            page.wait_for_selector(".leaflet-container", timeout=20000)
             time.sleep(3)
 
             hide_ui_overlays(page)
@@ -1095,6 +1095,7 @@ def capture_and_broadcast(state: dict):
         overlay_logo_and_crop(
             raw_path, dark_logo, final_path, 1080,
             active_statuses=active_statuses, theme="dark",
+            counts=status_counts,
         )
         raw_path.unlink(missing_ok=True)
         log.info("📸 Screenshot captured — broadcasting to %d subscribers...", len(recipients))

@@ -14,6 +14,9 @@ RUN playwright install --with-deps chromium
 # Copy brain code + screenshot module + metadata dependency
 COPY brain.py screenshot_alerts.py polygons.json district_to_areas.py ./
 
+# Copy logo assets for screenshot overlays
+COPY public/ ./public/
+
 # serviceAccountKey.json is mounted at runtime (not baked into image)
 
 ENV PYTHONUNBUFFERED=1
