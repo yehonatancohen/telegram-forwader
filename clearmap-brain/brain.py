@@ -941,46 +941,19 @@ def _handle_bot_command(chat_id: str, text: str, first_name: str):
     cmd = text.strip().lower().split()[0] if text else ""
 
     if cmd in ("/start", "/subscribe"):
-        with _subscribers_lock:
-            if chat_id in _subscribers:
-                _bot_send_message(chat_id, "✅ אתה כבר רשום לעדכונים.")
-                log.info("📋 %s (%s) already subscribed", first_name, chat_id)
-            else:
-                _subscribers.add(chat_id)
-                _save_subscribers(_subscribers)
-                _bot_send_message(
-                    chat_id,
-                    "✅ נרשמת בהצלחה!\n\n"
-                    "תקבל צילום מסך של המפה עם כל שינוי בהתרעות.\n"
-                    "לביטול רישום: /unsubscribe",
-                )
-                log.info("📋 ✅ NEW subscriber: %s (%s) — total: %d",
-                         first_name, chat_id, len(_subscribers))
-
+        _bot_send_message(
+            chat_id,
+            "✅ הרישום עבר לערוץ המרכזי: @clearmapchannel"
+        )
     elif cmd == "/unsubscribe":
-        with _subscribers_lock:
-            if chat_id in _subscribers:
-                _subscribers.discard(chat_id)
-                _save_subscribers(_subscribers)
-                _bot_send_message(chat_id, "❌ הרישום בוטל. לא תקבל עוד עדכונים.\nלחזור: /subscribe")
-                log.info("📋 ❌ Unsubscribed: %s (%s) — total: %d",
-                         first_name, chat_id, len(_subscribers))
-            else:
-                _bot_send_message(chat_id, "אינך רשום לעדכונים.\nלהרשם: /subscribe")
-
+        _bot_send_message(chat_id, "❌ כדי להפסיק לקבל עדכונים, יש לעזוב את הערוץ @clearmapchannel")
     elif cmd == "/status":
-        with _subscribers_lock:
-            n = len(_subscribers)
-        _bot_send_message(chat_id, f"📊 מנויים: {n}\n🤖 הבוט פעיל.")
-        log.debug("📋 /status from %s (%s)", first_name, chat_id)
-
+        _bot_send_message(chat_id, "🤖 הבוט פעיל ומשדר לערוץ המרכזי.")
     else:
         _bot_send_message(
             chat_id,
             "🤖 <b>ClearMap Bot</b>\n\n"
-            "/subscribe — הרשם לעדכוני מפה\n"
-            "/unsubscribe — בטל רישום\n"
-            "/status — סטטוס הבוט",
+            "העדכונים עברו לערוץ: @clearmapchannel"
         )
 
 
@@ -1133,26 +1106,21 @@ def _send_photo_to_chat(chat_id: str, photo_path: Path, caption: str) -> bool:
         return False
 
 
+TARGET_CHANNEL_ID = "-1003879479829"
+
 def capture_and_broadcast(state: dict):
-    """Capture a screenshot and broadcast it to all subscribers.
+    """Capture a screenshot and broadcast it to the main channel.
 
     Runs in a background thread — must not raise.
     """
     import subprocess
     
-    with _subscribers_lock:
-        recipients = set(_subscribers)
-
-    if not recipients:
-        log.info("📸 No subscribers — skipping screenshot.")
-        return
-
     if not _screenshot_lock.acquire(blocking=False):
         log.info("📸 Screenshot already in progress — skipping.")
         return
 
     try:
-        log.info("📸 Capturing screenshot for %d subscribers via subprocess...", len(recipients))
+        log.info("📸 Capturing screenshot for broadcast channel via subprocess...")
 
         caption = _build_caption(state)
         log.info("📸 Caption: %s", caption)
@@ -1205,19 +1173,14 @@ def capture_and_broadcast(state: dict):
             log.error("📸 Screenshot subprocess completed but output file missing!")
             return
 
-        log.info("📸 Final screenshot ready (%.1fs, %.1fKB) — broadcasting to %d subscribers...",
-                 time.time() - t0, final_path.stat().st_size / 1024, len(recipients))
+        log.info("📸 Final screenshot ready (%.1fs, %.1fKB) — broadcasting to channel...",
+                 time.time() - t0, final_path.stat().st_size / 1024)
 
-        # Broadcast to all subscribers
-        ok_count = 0
-        fail_count = 0
-        for chat_id in recipients:
-            if _send_photo_to_chat(chat_id, final_path, caption):
-                ok_count += 1
-            else:
-                fail_count += 1
-
-        log.info("📸 Broadcast done: %d sent, %d failed", ok_count, fail_count)
+        # Broadcast to channel
+        if _send_photo_to_chat(TARGET_CHANNEL_ID, final_path, caption):
+             log.info("📸 Broadcast sent to channel successfully")
+        else:
+             log.error("📸 Broadcast to channel failed")
 
     except Exception as e:
         log.error("📸 Screenshot/broadcast error: %s", e, exc_info=True)
@@ -1244,15 +1207,10 @@ def main():
     last_screenshot_time = 0.0
     pending_screenshot = False  # True when a screenshot was deferred due to cooldown
 
-    # Load subscribers
-    global _subscribers
-    _subscribers = _load_subscribers()
-
     # Start bot command poller in background
     if TELEGRAM_BOT_TOKEN:
         threading.Thread(target=_bot_poller, daemon=True).start()
-        log.info("📸 Screenshot broadcast enabled (cooldown=%ds, subscribers=%d)",
-                 SCREENSHOT_COOLDOWN, len(_subscribers))
+        log.info("📸 Screenshot broadcast enabled (cooldown=%ds)", SCREENSHOT_COOLDOWN)
     else:
         log.info("📸 Screenshot broadcast disabled (set CLEARMAP_BOT_TOKEN)")
 
