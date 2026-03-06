@@ -392,6 +392,8 @@ def main():
     parser = argparse.ArgumentParser(description="Capture alert map screenshots")
     parser.add_argument("--url", default=DEFAULT_URL, help="Map URL to capture")
     parser.add_argument("--output", default=str(OUTPUT_DIR), help="Output directory")
+    parser.add_argument("--output-file", help="Specific output file path for a single capture")
+    parser.add_argument("--theme", choices=["dark", "light"], default="dark", help="Target theme when using --output-file")
     parser.add_argument("--size", type=int, default=1080, help="Output square size in pixels")
     parser.add_argument("--no-legend", action="store_true", help="Skip legend overlay")
     args = parser.parse_args()
@@ -415,71 +417,110 @@ def main():
 
     print("[MAP] Alert Screenshot Generator")
     print(f"  URL: {args.url}")
-    print(f"  Output: {output_dir}")
+    if args.output_file:
+        print(f"  Output File: {args.output_file}")
+    else:
+        print(f"  Output Dir: {output_dir}")
     print(f"  Size: {args.size}x{args.size}")
     print()
 
+    # Disable heavy browser features to save CPU inside the VM
+    chromium_args = [
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--mute-audio"
+    ]
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=chromium_args)
         context = browser.new_context(
             viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
             device_scale_factor=2,  # Retina-quality screenshots
         )
         page = context.new_page()
 
-        # -- Dark theme screenshot -------------------------------------------
-        print("[+] Capturing dark theme...")
-        page.goto(args.url, wait_until="networkidle")
-
-        # Wait for map tiles and polygons to render
-        page.wait_for_selector(".leaflet-container", timeout=15000)
-        time.sleep(3)  # Let initial fitBounds or default zoom settle
-
-        print("  [+] Adjusting zoom level...")
-        page.mouse.move(VIEWPORT_SIZE / 2, VIEWPORT_SIZE / 2)
-        page.mouse.wheel(0, 0)  # Scroll up to zoom in (less aggressive)
-        time.sleep(2)  # Let tiles load after zoom
-
-        # Hide UI overlays
-        hide_ui_overlays(page)
-        time.sleep(0.5)
-
-        dark_raw = capture_screenshot(page, "dark", output_dir)
-
-        dark_logo = LOGO_DIR / "logo-dark-theme.png"
-        dark_output = output_dir / f"alert_dark_{timestamp}.png"
-        overlay_logo_and_crop(dark_raw, dark_logo, dark_output, args.size,
-                              active_statuses=active_statuses, theme="dark",
-                              counts=status_counts)
-        print(f"  [OK] Saved: {dark_output}")
-
-        # -- Light theme screenshot ------------------------------------------
-        print("[+] Capturing light theme...")
-        switch_theme(page, "light")
-        time.sleep(3)  # Let tiles fully reload
-
-        # Re-hide UI overlays
-        hide_ui_overlays(page)
-        time.sleep(0.5)
-
-        light_raw = capture_screenshot(page, "light", output_dir)
-
-        light_logo = LOGO_DIR / "logo-light-theme.png"
-        light_output = output_dir / f"alert_light_{timestamp}.png"
-        overlay_logo_and_crop(light_raw, light_logo, light_output, args.size,
-                              active_statuses=active_statuses, theme="light",
-                              counts=status_counts)
-        print(f"  [OK] Saved: {light_output}")
-
-        # Cleanup raw files
-        dark_raw.unlink(missing_ok=True)
-        light_raw.unlink(missing_ok=True)
-
-        browser.close()
-
-    print()
-    print(f"[DONE] Screenshots saved to {output_dir}")
-    return dark_output, light_output
+        if args.output_file:
+            print(f"[+] Capturing single '{args.theme}' theme to {args.output_file}...")
+            page.goto(args.url, wait_until="networkidle")
+            page.wait_for_selector(".leaflet-container", timeout=15000)
+            time.sleep(3)
+            
+            # Switch theme if needed
+            if args.theme == "light":
+                switch_theme(page, "light")
+                time.sleep(3)
+                
+            hide_ui_overlays(page)
+            time.sleep(0.5)
+            
+            raw_path = capture_screenshot(page, args.theme, output_dir)
+            logo_path = LOGO_DIR / f"logo-{args.theme}-theme.png"
+            final_path = Path(args.output_file)
+            overlay_logo_and_crop(raw_path, logo_path, final_path, args.size,
+                                  active_statuses=active_statuses, theme=args.theme,
+                                  counts=status_counts)
+            print(f"  [OK] Saved: {final_path}")
+            raw_path.unlink(missing_ok=True)
+            browser.close()
+            return final_path
+            
+        else:
+            # Default behavior: capture both themes to the output dir
+            # -- Dark theme screenshot -------------------------------------------
+            print("[+] Capturing dark theme...")
+            page.goto(args.url, wait_until="networkidle")
+    
+            # Wait for map tiles and polygons to render
+            page.wait_for_selector(".leaflet-container", timeout=15000)
+            time.sleep(3)  # Let initial fitBounds or default zoom settle
+    
+            print("  [+] Adjusting zoom level...")
+            page.mouse.move(VIEWPORT_SIZE / 2, VIEWPORT_SIZE / 2)
+            page.mouse.wheel(0, 0)  # Scroll up to zoom in (less aggressive)
+            time.sleep(2)  # Let tiles load after zoom
+    
+            # Hide UI overlays
+            hide_ui_overlays(page)
+            time.sleep(0.5)
+    
+            dark_raw = capture_screenshot(page, "dark", output_dir)
+    
+            dark_logo = LOGO_DIR / "logo-dark-theme.png"
+            dark_output = output_dir / f"alert_dark_{timestamp}.png"
+            overlay_logo_and_crop(dark_raw, dark_logo, dark_output, args.size,
+                                  active_statuses=active_statuses, theme="dark",
+                                  counts=status_counts)
+            print(f"  [OK] Saved: {dark_output}")
+    
+            # -- Light theme screenshot ------------------------------------------
+            print("[+] Capturing light theme...")
+            switch_theme(page, "light")
+            time.sleep(3)  # Let tiles fully reload
+    
+            # Re-hide UI overlays
+            hide_ui_overlays(page)
+            time.sleep(0.5)
+    
+            light_raw = capture_screenshot(page, "light", output_dir)
+    
+            light_logo = LOGO_DIR / "logo-light-theme.png"
+            light_output = output_dir / f"alert_light_{timestamp}.png"
+            overlay_logo_and_crop(light_raw, light_logo, light_output, args.size,
+                                  active_statuses=active_statuses, theme="light",
+                                  counts=status_counts)
+            print(f"  [OK] Saved: {light_output}")
+    
+            # Cleanup raw files
+            dark_raw.unlink(missing_ok=True)
+            light_raw.unlink(missing_ok=True)
+    
+            browser.close()
+            print()
+            print(f"[DONE] Screenshots saved to {output_dir}")
+            return dark_output, light_output
 
 
 def quick_capture_and_send(bot_token: str, chat_id: str,
@@ -494,8 +535,17 @@ def quick_capture_and_send(bot_token: str, chat_id: str,
         output_dir = OUTPUT_DIR
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        chromium_args = [
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-extensions",
+            "--mute-audio"
+        ]
+
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=chromium_args)
             context = browser.new_context(
                 viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
                 device_scale_factor=2,

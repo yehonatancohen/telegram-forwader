@@ -273,8 +273,8 @@ class UavTracker:
     the alert areas and places observations along it.
     """
 
-    CLUSTER_LATERAL_KM = 80.0   # max perpendicular distance from track line
-    CLUSTER_FORWARD_KM = 250.0  # max forward distance from last smoothed point
+    CLUSTER_LATERAL_KM = 35.0   # max perpendicular distance from track line
+    CLUSTER_FORWARD_KM = 80.0   # max forward distance from last smoothed point
     STALE_SECONDS = 300.0
     PREDICT_SECONDS = [30, 60]
     SPEED_SMOOTHING = 0.3       # exponential smoothing alpha for speed updates
@@ -314,16 +314,21 @@ class UavTracker:
             best_track = None
             best_score = float("inf")
             for track in self.tracks.values():
+                dt_hours = (now - track.last_updated) / 3600.0
+                # Maximum logical distance the UAV could have traveled since last update,
+                # plus a 15km buffer for the alert polygon size / minor maneuvers.
+                max_reachable_dist_km = (track.speed_estimate * dt_hours) + 15.0
+                
                 if len(track.smoothed_points) < 2:
                     dist = _haversine_km(lat, lng, track.smoothed_points[-1][0], track.smoothed_points[-1][1])
-                    if dist < self.CLUSTER_FORWARD_KM and dist < best_score:
+                    if dist < max_reachable_dist_km and dist < best_score:
                         best_score = dist
                         best_track = track
                 else:
                     last_sp = track.smoothed_points[-1]
                     perp = _perpendicular_dist_km(lat, lng, last_sp[0], last_sp[1], track.heading)
                     _, _, along = _project_onto_line(lat, lng, last_sp[0], last_sp[1], track.heading)
-                    if perp < self.CLUSTER_LATERAL_KM and along > -5 and along < self.CLUSTER_FORWARD_KM:
+                    if perp < self.CLUSTER_LATERAL_KM and along > -5 and along < max_reachable_dist_km:
                         score = perp + abs(along) * 0.1
                         if score < best_score:
                             best_score = score
@@ -355,7 +360,7 @@ class UavTracker:
             remaining = []
             for other in orphans:
                 olat, olng = centroids[other]
-                if _haversine_km(lat, lng, olat, olng) < self.CLUSTER_LATERAL_KM * 2:
+                if _haversine_km(lat, lng, olat, olng) < self.CLUSTER_LATERAL_KM:
                     grouped.append(other)
                 else:
                     remaining.append(other)
@@ -400,16 +405,37 @@ class UavTracker:
             # Initial speed estimate from distance and time
             track.speed_estimate = UAV_DEFAULT_SPEED_KMH
 
-            # Retroactively fix the first point to be 90s behind the first centroid
-            offset_km = (UAV_DEFAULT_SPEED_KMH / 3600) * UAV_LEAD_TIME_SECONDS
-            back_h = (track.heading + 180) % 360
-            fixed_first_lat, fixed_first_lng = _project_point(first[0], first[1], back_h, offset_km)
-            track.smoothed_points[0] = (fixed_first_lat, fixed_first_lng, first[2])
+            def _is_outside_borders(lat: float, lng: float) -> bool:
+                if lat > 33.15: return True # Lebanon border
+                if lat < 29.6: return True  # Eilat
+                if lng > 35.65: return True # Jordan/Syria border
+                if lng < 34.2: return True  # Sea
+                
+                # Coastline approx
+                coast_lng = 34.3 + (lat - 31.2) * 0.45
+                if lng < coast_lng: return True
+                
+                # Gaza
+                if 31.2 < lat < 31.6 and lng < 34.55: return True
+                return False
 
-            # The current true position is 90s behind the NEW centroid along the track
-            _, _, proj_dist_from_fixed = _project_onto_line(raw_lat, raw_lng, fixed_first_lat, fixed_first_lng, track.heading)
+            # Push the very first point backwards along the heading until it crosses the closest border
+            back_h = (track.heading + 180) % 360
+            fixed_first_lat, fixed_first_lng = first[0], first[1]
+            dist_pushed_km = 0.0
             
-            current_dist = max(proj_dist_from_fixed - offset_km, 0.5)
+            for _ in range(200):  # Maximum 400km push
+                if _is_outside_borders(fixed_first_lat, fixed_first_lng):
+                    break
+                fixed_first_lat, fixed_first_lng = _project_point(fixed_first_lat, fixed_first_lng, back_h, 2.0)
+                dist_pushed_km += 2.0
+                
+            time_offset_s = (dist_pushed_km / UAV_DEFAULT_SPEED_KMH) * 3600
+            track.smoothed_points[0] = (fixed_first_lat, fixed_first_lng, first[2] - time_offset_s)
+
+            # The current true position is based on the elapsed time from the border point
+            total_time_from_border = now - track.smoothed_points[0][2]
+            current_dist = max((UAV_DEFAULT_SPEED_KMH / 3600) * total_time_from_border, 0.5)
             new_lat, new_lng = _project_point(fixed_first_lat, fixed_first_lng, track.heading, current_dist)
             track.smoothed_points.append((new_lat, new_lng, now))
         else:
@@ -1112,6 +1138,8 @@ def capture_and_broadcast(state: dict):
 
     Runs in a background thread — must not raise.
     """
+    import subprocess
+    
     with _subscribers_lock:
         recipients = set(_subscribers)
 
@@ -1124,72 +1152,61 @@ def capture_and_broadcast(state: dict):
         return
 
     try:
-        from screenshot_alerts import (
-            capture_screenshot as _cap_screenshot,
-            hide_ui_overlays,
-            overlay_logo_and_crop,
-            fetch_active_statuses,
-            LOGO_DIR,
-            VIEWPORT_SIZE,
-        )
-        from playwright.sync_api import sync_playwright
-
-        log.info("📸 Capturing screenshot for %d subscribers...", len(recipients))
-
-        log.info("📸 Step 1/6: Fetching active statuses from Firebase...")
-        active_statuses, status_counts = fetch_active_statuses()
-        log.info("📸 Step 1/6 done: statuses=%s counts=%s", active_statuses, status_counts)
+        log.info("📸 Capturing screenshot for %d subscribers via subprocess...", len(recipients))
 
         caption = _build_caption(state)
         log.info("📸 Caption: %s", caption)
 
         output_dir = Path(__file__).parent / "screenshots"
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        log.info("📸 Step 2/6: Launching Playwright browser (url=%s)...", SCREENSHOT_URL)
-        t0 = time.time()
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            log.info("📸 Step 2/6: Browser launched in %.1fs", time.time() - t0)
-
-            context = browser.new_context(
-                viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
-                device_scale_factor=2,
-            )
-            page = context.new_page()
-
-            log.info("📸 Step 3/6: Navigating to %s ...", SCREENSHOT_URL)
-            t1 = time.time()
-            page.goto(SCREENSHOT_URL, wait_until="networkidle", timeout=30000)
-            log.info("📸 Step 3/6: Page loaded (networkidle) in %.1fs", time.time() - t1)
-
-            log.info("📸 Step 4/6: Waiting for .leaflet-container selector...")
-            t2 = time.time()
-            page.wait_for_selector(".leaflet-container", timeout=20000)
-            log.info("📸 Step 4/6: Selector found in %.1fs, sleeping 3s for tiles...", time.time() - t2)
-            time.sleep(3)
-
-            log.info("📸 Step 5/6: Hiding UI overlays and capturing screenshot...")
-            hide_ui_overlays(page)
-            time.sleep(0.5)
-
-            raw_path = _cap_screenshot(page, "dark", output_dir)
-            log.info("📸 Step 5/6: Raw screenshot saved (%s, %.1fKB)",
-                     raw_path, raw_path.stat().st_size / 1024)
-            browser.close()
-
-        log.info("📸 Step 6/6: Overlaying logo + legend...")
+        
         final_path = output_dir / "broadcast_latest.png"
-        dark_logo = LOGO_DIR / "logo-dark-theme.png"
-        log.info("📸 Logo path: %s (exists=%s)", dark_logo, dark_logo.exists())
-        overlay_logo_and_crop(
-            raw_path, dark_logo, final_path, 1080,
-            active_statuses=active_statuses, theme="dark",
-            counts=status_counts,
+        script_path = Path(__file__).parent / "screenshot_alerts.py"
+        
+        url = SCREENSHOT_URL
+        if "?" in url:
+            url += "&screenshot=true"
+        else:
+            url += "?screenshot=true"
+            
+        cmd = [
+            sys.executable, str(script_path),
+            "--url", url,
+            "--output-file", str(final_path),
+            "--theme", "dark",
+            "--size", "1080"
+        ]
+        
+        def _lower_priority():
+            if sys.platform != "win32":
+                try:
+                    os.nice(15)
+                except Exception:
+                    pass
+
+        t0 = time.time()
+        log.info("📸 Running: %s", " ".join(cmd))
+        
+        # Run playwright screenshot job in an isolated, low-priority process
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            preexec_fn=_lower_priority if sys.platform != "win32" else None,
+            timeout=120
         )
-        raw_path.unlink(missing_ok=True)
-        log.info("📸 Final screenshot ready (%s, %.1fKB) — broadcasting to %d subscribers...",
-                 final_path, final_path.stat().st_size / 1024, len(recipients))
+        
+        if result.returncode != 0:
+            log.error("📸 Screenshot subprocess failed (code=%d):\nSTDOUT: %s\nSTDERR: %s", 
+                      result.returncode, result.stdout, result.stderr)
+            return
+            
+        if not final_path.exists():
+            log.error("📸 Screenshot subprocess completed but output file missing!")
+            return
+
+        log.info("📸 Final screenshot ready (%.1fs, %.1fKB) — broadcasting to %d subscribers...",
+                 time.time() - t0, final_path.stat().st_size / 1024, len(recipients))
 
         # Broadcast to all subscribers
         ok_count = 0
