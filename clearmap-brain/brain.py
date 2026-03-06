@@ -1133,6 +1133,7 @@ def main():
     centroids = {name: _compute_centroid(p["polygon"]) for name, p in polygons.items() if p.get("polygon")}
     uav_tracker = UavTracker()
     last_screenshot_time = 0.0
+    pending_screenshot = False  # True when a screenshot was deferred due to cooldown
 
     # Load subscribers
     global _subscribers
@@ -1166,11 +1167,17 @@ def main():
                 sync_to_firebase(state)
                 sync_uav_tracks(uav_tracker)
 
-                # Broadcast screenshot when there are active alerts
-                now_ts = time.time()
-                if (state and TELEGRAM_BOT_TOKEN
-                        and now_ts - last_screenshot_time >= SCREENSHOT_COOLDOWN):
-                    last_screenshot_time = now_ts
+                # Mark that we want a screenshot (state changed while alerts are active)
+                if state and TELEGRAM_BOT_TOKEN:
+                    pending_screenshot = True
+
+            # Send pending screenshot once cooldown has elapsed
+            now_ts = time.time()
+            if (pending_screenshot and TELEGRAM_BOT_TOKEN
+                    and now_ts - last_screenshot_time >= SCREENSHOT_COOLDOWN):
+                last_screenshot_time = now_ts
+                pending_screenshot = False
+                if state:
                     state_snapshot = {k: v for k, v in state.items()}
                     threading.Thread(
                         target=capture_and_broadcast,
