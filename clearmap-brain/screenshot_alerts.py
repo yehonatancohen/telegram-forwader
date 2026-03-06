@@ -53,23 +53,32 @@ LEGEND_ITEMS = [
 
 
 def _bidi_text(text: str) -> str:
-    """Convert Hebrew (RTL) text to visual order for Pillow rendering."""
-    # Split text into elements preserving numbers
-    import re
-    # Match words or number groups separately
-    tokens = re.findall(r'\S+|\s+', text)
-    visual_tokens = []
+    """Convert Hebrew (RTL) text to visual order based on Pillow's capabilities.
     
-    # Process RTL
+    If Pillow has libraqm (Linux/Docker), it natively supports RTL, so we return the
+    text unchanged (or it gets double-reversed into gibberish).
+    If Pillow lacks libraqm (Windows dev), we use python-bidi to visually reorder it.
+    """
+    from PIL import features
+    if features.check('raqm'):
+        return text  # Native shaping handles it
+        
+    try:
+        from bidi.algorithm import get_display
+        return get_display(text, base_dir='R')
+    except ImportError:
+        pass
+
+    # Basic fallback for Windows without python-bidi
+    import re
+    tokens = re.findall(r'\S+|\s+', text)
+    visual = []
     for token in reversed(tokens):
         if token.isspace() or token.isdigit() or re.match(r'^[0-9\W]+$', token):
-            # For numbers and punctuation, keep exact characters LTR
-            visual_tokens.append(token)
+            visual.append(token)
         else:
-            # For Hebrew words, reverse the letters
-            visual_tokens.append(token[::-1])
-            
-    return "".join(visual_tokens)
+            visual.append(token[::-1])
+    return "".join(visual)
 
 def _load_hebrew_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Try to load a Hebrew-capable font."""
@@ -145,16 +154,17 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
     dummy_draw = ImageDraw.Draw(img)
     max_text_w = 0
     for _, label, status in items:
-        # Build display text: "count label" (RTL)
         cnt = counts.get(status, 0) if counts else 0
-        
         if status == "after_alert":
             display = f"{cnt} מקומות להישאר במרחב מוגן" if cnt else "מקומות להישאר במרחב מוגן"
         else:
             display = f"{cnt} {label}" if cnt else label
             
         visual_label = _bidi_text(display)
-        bbox = dummy_draw.textbbox((0, 0), visual_label, font=font)
+        # Handle native raqm bbox measuring
+        from PIL import features
+        kwargs = {"direction": "rtl", "language": "he"} if features.check('raqm') else {}
+        bbox = dummy_draw.textbbox((0, 0), visual_label, font=font, **kwargs)
         text_w = bbox[2] - bbox[0]
         max_text_w = max(max_text_w, text_w)
 
@@ -199,12 +209,16 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
             display = f"{cnt} מקומות להישאר במרחב מוגן" if cnt else "מקומות להישאר במרחב מוגן"
         else:
             display = f"{cnt} {label}" if cnt else label
+            
         visual_label = _bidi_text(display)
-        bbox = draw.textbbox((0, 0), visual_label, font=font)
+        from PIL import features
+        kwargs = {"direction": "rtl", "language": "he"} if features.check('raqm') else {}
+        bbox = draw.textbbox((0, 0), visual_label, font=font, **kwargs)
         text_w = bbox[2] - bbox[0]
         text_x = dot_cx - dot_radius - inner_pad - text_w
         text_y = row_y + (row_height - font_size) // 2
-        draw.text((text_x, text_y), visual_label, fill=(255, 255, 255, 230), font=font)
+        
+        draw.text((text_x, text_y), visual_label, fill=(255, 255, 255, 230), font=font, **kwargs)
 
     return img
 
@@ -222,7 +236,9 @@ def draw_uav_disclaimer(img: Image.Image, theme: str) -> Image.Image:
     
     # Measure text width
     dummy_draw = ImageDraw.Draw(img)
-    bbox = dummy_draw.textbbox((0, 0), visual_text, font=font)
+    from PIL import features
+    kwargs = {"direction": "rtl", "language": "he"} if features.check('raqm') else {}
+    bbox = dummy_draw.textbbox((0, 0), visual_text, font=font, **kwargs)
     text_w = bbox[2] - bbox[0]
     text_h = int(font_size * 1.2)
     
@@ -248,7 +264,7 @@ def draw_uav_disclaimer(img: Image.Image, theme: str) -> Image.Image:
     text_x = lx + padding
     text_y = ly + padding + (box_h - padding*2 - text_h) // 2
     
-    draw.text((text_x, text_y), visual_text, fill=(253, 224, 71, 230), font=font) # Yellow-300
+    draw.text((text_x, text_y), visual_text, fill=(253, 224, 71, 230), font=font, **kwargs) # Yellow-300
     
     return img
 
