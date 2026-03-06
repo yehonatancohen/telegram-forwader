@@ -43,12 +43,12 @@ FIREBASE_ALERTS_PATH = "/public_state/active_alerts.json"
 
 # Status → (color, Hebrew label) — matching the BOTTOM PANEL in IntelBanner.tsx
 LEGEND_ITEMS = [
-    ("alert",          (239,  68,  68), "התרעות ירי רקטות וטילים"),
-    ("uav",            (192, 132, 252), "התרעות חדירת כלי טיס עוין"),
-    ("terrorist",      (153,  27,  27), "חדירת מחבלים"),
+    ("alert",          (255,  42,  42), "התרעות ירי רקטות וטילים"),
+    ("uav",            (224,  64, 251), "התרעות חדירת כלי טיס עוין"),
+    ("terrorist",      (255,   0,  85), "חדירת מחבלים"),
     ("pre_alert",      (255, 106,   0), "התרעות מוקדמות"),
-    ("after_alert",    (239, 100, 100), "להישאר בממ\"ד"),
-    ("telegram_intel", ( 56, 189, 248), "מודיעין"),
+    ("after_alert",    (255,  80,  80), "להישאר בממ\"ד"),
+    ("telegram_intel", (  0, 229, 255), "מודיעין"),
 ]
 
 
