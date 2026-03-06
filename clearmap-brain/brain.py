@@ -691,7 +691,7 @@ def update_state(
     oref_data: list[tuple[str, str]],
     telegram_data: list[tuple[str, str]],
     polygons: dict,
-) -> bool:
+) -> tuple[bool, bool]:
     """
     Updates the internal state machine.
     
@@ -702,9 +702,12 @@ def update_state(
     - after_alert:     persists until Oref "clear" signal. Re-alertable (→ alert)
     
     Priority: alert > pre_alert > after_alert > telegram_intel
+    
+    Returns: (changed_flag, has_new_primary_alert_flag)
     """
     now = time.time()
     changed = False
+    has_new_primary = False
     
     # ── Step 0: Time-based auto-transitions ──────────────────────────────
     for city_he, cs in list(state.items()):
@@ -775,6 +778,8 @@ def update_state(
                 cs.started_at = now
                 cs.is_double = (old_state in ("alert", "uav", "terrorist", "after_alert") and alert_type in ("alert", "uav", "terrorist"))
                 changed = True
+                if alert_type in ("alert", "uav", "terrorist", "pre_alert"):
+                    has_new_primary = True
             elif old_state == alert_type and alert_type in ("alert", "uav", "terrorist", "pre_alert"):
                 # Same state from Oref — refresh timer only for active oref states
                 if city_he in oref_cities:
@@ -794,13 +799,15 @@ def update_state(
             emoji = {"telegram_intel": "🟡", "pre_alert": "🟠", "alert": "🔴", "uav": "🟣", "terrorist": "🔶", "after_alert": "⚫"}.get(alert_type, "❓")
             log.info("%s NEW %s: %s (%s)", emoji, alert_type.upper(), city_he, poly_data["city_name"])
             changed = True
+            if alert_type in ("alert", "uav", "terrorist", "pre_alert"):
+                has_new_primary = True
     
     # ── Step 3: Oref signals that STOPPED ─────────────────────────────────
     # If a city was in pre_alert/alert from Oref but is no longer in Oref response,
     # let the timer handle the transition (Step 0 on next tick).
     # We do NOT force-transition here — the Oref API might just be between polls.
     
-    return changed
+    return changed, has_new_primary
 
 
 # ── Firebase Sync ───────────────────────────────────────────────────────────
@@ -1170,6 +1177,7 @@ def main():
     centroids = {name: _compute_centroid(p["polygon"]) for name, p in polygons.items() if p.get("polygon")}
     uav_tracker = UavTracker()
     last_screenshot_time = 0.0
+    sliding_window_end_time = 0.0
     pending_screenshot = False  # True when a screenshot was deferred due to cooldown
 
     # Start bot command poller in background
@@ -1190,7 +1198,7 @@ def main():
         try:
             oref_data = fetch_oref()
             telegram_data = fetch_telegram_alerts(polygons)
-            changed = update_state(state, oref_data, telegram_data, polygons)
+            changed, has_new_primary = update_state(state, oref_data, telegram_data, polygons)
 
             uav_cities = {c for c, cs in state.items() if cs.state == "uav"}
             tracks_changed = uav_tracker.update(uav_cities, centroids, time.time())
@@ -1199,40 +1207,40 @@ def main():
                 sync_to_firebase(state)
                 sync_uav_tracks(uav_tracker)
 
-                # Mark that we want a screenshot (state changed while alerts are active)
-                if state and TELEGRAM_BOT_TOKEN:
-                    if not pending_screenshot:
-                        log.info("📸 State changed with %d active alerts — marking screenshot pending", len(state))
-                    pending_screenshot = True
-                elif not state:
-                    log.info("📸 State changed but no active alerts — no screenshot needed")
-                elif not TELEGRAM_BOT_TOKEN:
-                    log.info("📸 State changed but no CLEARMAP_BOT_TOKEN — screenshot disabled")
-
-            # Send pending screenshot once cooldown has elapsed
+            # Slide the window if we got new actual alerts
             now_ts = time.time()
+            if has_new_primary and TELEGRAM_BOT_TOKEN:
+                # Delay the screenshot by 10s. If it arrives within 10s of another alert, it extends the batch clock!
+                sliding_window_end_time = now_ts + 10.0
+                pending_screenshot = True
+                log.info("📸 New primary alert received! Sliding window set/pushed to 10s from now.")
+
+            # Send pending screenshot once both the sliding window and global cooldown have elapsed
             if pending_screenshot and TELEGRAM_BOT_TOKEN:
-                time_since_last = now_ts - last_screenshot_time
-                if time_since_last >= SCREENSHOT_COOLDOWN:
-                    if state:
-                        log.info("📸 Cooldown elapsed (%.0fs since last) — triggering screenshot for %d alerts",
-                                 time_since_last, len(state))
-                        last_screenshot_time = now_ts
-                        pending_screenshot = False
-                        state_snapshot = {k: v for k, v in state.items()}
-                        threading.Thread(
-                            target=capture_and_broadcast,
-                            args=(state_snapshot,),
-                            daemon=True,
-                        ).start()
+                if now_ts >= sliding_window_end_time:
+                    time_since_last = now_ts - last_screenshot_time
+                    if time_since_last >= SCREENSHOT_COOLDOWN:
+                        if state:
+                            log.info("📸 Cooldown & Sliding window elapsed! Triggering screenshot for %d alerts", len(state))
+                            last_screenshot_time = now_ts
+                            pending_screenshot = False
+                            state_snapshot = {k: v for k, v in state.items()}
+                            threading.Thread(
+                                target=capture_and_broadcast,
+                                args=(state_snapshot,),
+                                daemon=True,
+                            ).start()
+                        else:
+                            log.info("📸 Window elapsed but alerts cleared — cancelling pending screenshot")
+                            pending_screenshot = False
                     else:
-                        log.info("📸 Cooldown elapsed but alerts cleared — cancelling pending screenshot")
-                        pending_screenshot = False
+                        remaining_cool = SCREENSHOT_COOLDOWN - time_since_last
+                        if int(remaining_cool) % 30 == 0 or remaining_cool > SCREENSHOT_COOLDOWN - 2:
+                            log.info("📸 Screenshot ready from batching, but waiting on global cooldown: %.0fs left", remaining_cool)
                 else:
-                    remaining = SCREENSHOT_COOLDOWN - time_since_last
-                    # Only log this every ~30s to avoid spam
-                    if int(remaining) % 30 == 0 or remaining > SCREENSHOT_COOLDOWN - 2:
-                        log.info("📸 Screenshot pending — cooldown remaining: %.0fs", remaining)
+                    remaining_window = sliding_window_end_time - now_ts
+                    if int(remaining_window) % 3 == 0 or remaining_window > 8:
+                        log.info("📸 Waiting for alert barrage to settle... (%.1fs sliding window left)", remaining_window)
 
         except requests.exceptions.RequestException as e:
             log.error("HTTP error: %s", e)
