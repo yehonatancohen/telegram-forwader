@@ -1001,9 +1001,19 @@ def _build_caption(state: dict) -> str:
     """Build a Hebrew caption with alert locations, times, and website link."""
     from collections import defaultdict
     from datetime import datetime
+    try:
+        from district_to_areas import DISTRICT_AREAS
+    except ImportError:
+        DISTRICT_AREAS = {}
 
     if not state:
         return "אין התרעות פעילות"
+
+    # Build reverse mapping from city -> region
+    city_to_region = {}
+    for region, cities_list in DISTRICT_AREAS.items():
+        for c in cities_list:
+            city_to_region[c] = region
 
     # Group cities by status
     groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
@@ -1018,13 +1028,31 @@ def _build_caption(state: dict) -> str:
             continue
         emoji = _STATUS_EMOJI.get(status, "❓")
         label = _STATUS_LABEL.get(status, status)
-        lines.append(f"{emoji} {len(cities)} {label}:")
+        
+        if status == "after_alert":
+            lines.append(f"{emoji} {len(cities)} מקומות להישאר במרחב מוגן:")
+        else:
+            lines.append(f"{emoji} {len(cities)} {label}:")
 
-        # Sort by time (newest first) and list city names with time
-        cities.sort(key=lambda x: x[1], reverse=True)
-        for city_name, ts in cities:
-            t = datetime.fromtimestamp(ts).strftime("%H:%M")
-            lines.append(f"  • {city_name} ({t})")
+        # If too many alerts of this type, group by region
+        if len(cities) > 8 and DISTRICT_AREAS:
+            reg_dict: dict[str, float] = {}
+            for city_name, ts in cities:
+                reg = city_to_region.get(city_name, city_name)
+                # Keep the newest timestamp for the region
+                if reg not in reg_dict or ts > reg_dict[reg]:
+                    reg_dict[reg] = ts
+            
+            reg_list = sorted(reg_dict.items(), key=lambda x: x[1], reverse=True)
+            for reg, ts in reg_list:
+                t = datetime.fromtimestamp(ts).strftime("%H:%M")
+                lines.append(f"  • {reg} ({t})")
+        else:
+            # Sort by time (newest first) and list city names with time
+            cities.sort(key=lambda x: x[1], reverse=True)
+            for city_name, ts in cities:
+                t = datetime.fromtimestamp(ts).strftime("%H:%M")
+                lines.append(f"  • {city_name} ({t})")
 
     lines.append("")
     lines.append("🗺 clearmap.co.il")
@@ -1033,7 +1061,7 @@ def _build_caption(state: dict) -> str:
 
     # Telegram photo captions are limited to 1024 characters
     if len(caption) > 1024:
-        # Truncate city lists but keep the summary + link
+        # Truncate lists but keep the summary + link
         summary_parts = []
         for status in ("alert", "uav", "terrorist", "pre_alert", "after_alert", "telegram_intel"):
             cities = groups.get(status)
@@ -1041,7 +1069,10 @@ def _build_caption(state: dict) -> str:
                 continue
             emoji = _STATUS_EMOJI.get(status, "❓")
             label = _STATUS_LABEL.get(status, status)
-            summary_parts.append(f"{emoji} {len(cities)} {label}")
+            if status == "after_alert":
+                summary_parts.append(f"{emoji} {len(cities)} מקומות להישאר במרחב מוגן")
+            else:
+                summary_parts.append(f"{emoji} {len(cities)} {label}")
         caption = " | ".join(summary_parts) + "\n\n🗺 clearmap.co.il"
 
     return caption

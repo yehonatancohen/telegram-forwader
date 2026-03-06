@@ -53,53 +53,41 @@ LEGEND_ITEMS = [
 
 
 def _bidi_text(text: str) -> str:
-    """Convert Hebrew (RTL) text to visual order for Pillow rendering.
-
-    Pillow draws text left-to-right. Hebrew logical order is right-to-left,
-    so we need to reorder for correct visual display.
-    """
-    # Try python-bidi (API changed between versions)
-    try:
-        from bidi.algorithm import get_display
-        return get_display(text, base_dir='R')
-    except ImportError:
-        pass
-    try:
-        from bidi import get_display
-        return get_display(text, base_dir='R')
-    except ImportError:
-        pass
-
-    # Manual fallback: reverse word order and reverse each Hebrew word,
-    # but keep digit tokens (like "12") in their original character order.
-    import unicodedata
-    tokens = text.split(' ')
+    """Convert Hebrew (RTL) text to visual order for Pillow rendering."""
+    # Split text into elements preserving numbers
+    import re
+    # Match words or number groups separately
+    tokens = re.findall(r'\S+|\s+', text)
     visual_tokens = []
+    
+    # Process RTL
     for token in reversed(tokens):
-        if token and any(unicodedata.bidirectional(c) in ('R', 'AL', 'AN') for c in token):
-            # Hebrew/Arabic token — reverse characters for visual LTR rendering
-            visual_tokens.append(token[::-1])
-        else:
-            # LTR token (digits, latin, punctuation) — keep as-is
+        if token.isspace() or token.isdigit() or re.match(r'^[0-9\W]+$', token):
+            # For numbers and punctuation, keep exact characters LTR
             visual_tokens.append(token)
-    return ' '.join(visual_tokens)
-
+        else:
+            # For Hebrew words, reverse the letters
+            visual_tokens.append(token[::-1])
+            
+    return "".join(visual_tokens)
 
 def _load_hebrew_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Try to load a Hebrew-capable font."""
     candidates = [
+        "public/NotoSansHebrew-Bold.ttf",
+        "../../clear-map/public/NotoSansHebrew-Bold.ttf",
         # Windows
-        "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
-        # Linux
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        # Linux / Docker
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     ]
     for path in candidates:
         if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-    # Fallback — default bitmap font (won't render Hebrew properly)
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
     return ImageFont.load_default()
 
 
@@ -160,7 +148,12 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
     for _, label, status in items:
         # Build display text: "count label" (RTL)
         cnt = counts.get(status, 0) if counts else 0
-        display = f"{cnt} {label}" if cnt else label
+        
+        if status == "after_alert":
+            display = f"{cnt} מקומות להישאר במרחב מוגן" if cnt else "מקומות להישאר במרחב מוגן"
+        else:
+            display = f"{cnt} {label}" if cnt else label
+            
         visual_label = _bidi_text(display)
         bbox = dummy_draw.textbbox((0, 0), visual_label, font=font)
         text_w = bbox[2] - bbox[0]
@@ -203,7 +196,10 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
 
         # Build display text with count
         cnt = counts.get(status, 0) if counts else 0
-        display = f"{cnt} {label}" if cnt else label
+        if status == "after_alert":
+            display = f"{cnt} מקומות להישאר במרחב מוגן" if cnt else "מקומות להישאר במרחב מוגן"
+        else:
+            display = f"{cnt} {label}" if cnt else label
         visual_label = _bidi_text(display)
         bbox = draw.textbbox((0, 0), visual_label, font=font)
         text_w = bbox[2] - bbox[0]
@@ -234,9 +230,9 @@ def draw_uav_disclaimer(img: Image.Image, theme: str) -> Image.Image:
     box_w = text_w + padding * 2
     box_h = text_h + padding * 2
     
-    # Position: bottom center
-    lx = (w - box_w) // 2
-    ly = h - box_h - int(w * 0.02)  # align with legend bottom padding
+    # Position: top left part of the screen to avoid overlapping with logo
+    lx = padding * 2
+    ly = padding * 2
     
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
