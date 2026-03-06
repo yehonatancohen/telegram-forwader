@@ -1048,11 +1048,11 @@ def capture_and_broadcast(state: dict):
         recipients = set(_subscribers)
 
     if not recipients:
-        log.debug("📸 No subscribers — skipping screenshot.")
+        log.info("📸 No subscribers — skipping screenshot.")
         return
 
     if not _screenshot_lock.acquire(blocking=False):
-        log.debug("📸 Screenshot already in progress — skipping.")
+        log.info("📸 Screenshot already in progress — skipping.")
         return
 
     try:
@@ -1068,37 +1068,60 @@ def capture_and_broadcast(state: dict):
 
         log.info("📸 Capturing screenshot for %d subscribers...", len(recipients))
 
+        log.info("📸 Step 1/6: Fetching active statuses from Firebase...")
         active_statuses, status_counts = fetch_active_statuses()
+        log.info("📸 Step 1/6 done: statuses=%s counts=%s", active_statuses, status_counts)
+
         caption = _build_caption(state)
+        log.info("📸 Caption: %s", caption)
+
         output_dir = Path(__file__).parent / "screenshots"
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        log.info("📸 Step 2/6: Launching Playwright browser (url=%s)...", SCREENSHOT_URL)
+        t0 = time.time()
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
+            log.info("📸 Step 2/6: Browser launched in %.1fs", time.time() - t0)
+
             context = browser.new_context(
                 viewport={"width": VIEWPORT_SIZE, "height": VIEWPORT_SIZE},
                 device_scale_factor=2,
             )
             page = context.new_page()
+
+            log.info("📸 Step 3/6: Navigating to %s ...", SCREENSHOT_URL)
+            t1 = time.time()
             page.goto(SCREENSHOT_URL, wait_until="networkidle", timeout=30000)
+            log.info("📸 Step 3/6: Page loaded (networkidle) in %.1fs", time.time() - t1)
+
+            log.info("📸 Step 4/6: Waiting for .leaflet-container selector...")
+            t2 = time.time()
             page.wait_for_selector(".leaflet-container", timeout=20000)
+            log.info("📸 Step 4/6: Selector found in %.1fs, sleeping 3s for tiles...", time.time() - t2)
             time.sleep(3)
 
+            log.info("📸 Step 5/6: Hiding UI overlays and capturing screenshot...")
             hide_ui_overlays(page)
             time.sleep(0.5)
 
             raw_path = _cap_screenshot(page, "dark", output_dir)
+            log.info("📸 Step 5/6: Raw screenshot saved (%s, %.1fKB)",
+                     raw_path, raw_path.stat().st_size / 1024)
             browser.close()
 
+        log.info("📸 Step 6/6: Overlaying logo + legend...")
         final_path = output_dir / "broadcast_latest.png"
         dark_logo = LOGO_DIR / "logo-dark-theme.png"
+        log.info("📸 Logo path: %s (exists=%s)", dark_logo, dark_logo.exists())
         overlay_logo_and_crop(
             raw_path, dark_logo, final_path, 1080,
             active_statuses=active_statuses, theme="dark",
             counts=status_counts,
         )
         raw_path.unlink(missing_ok=True)
-        log.info("📸 Screenshot captured — broadcasting to %d subscribers...", len(recipients))
+        log.info("📸 Final screenshot ready (%s, %.1fKB) — broadcasting to %d subscribers...",
+                 final_path, final_path.stat().st_size / 1024, len(recipients))
 
         # Broadcast to all subscribers
         ok_count = 0
@@ -1170,21 +1193,38 @@ def main():
 
                 # Mark that we want a screenshot (state changed while alerts are active)
                 if state and TELEGRAM_BOT_TOKEN:
+                    if not pending_screenshot:
+                        log.info("📸 State changed with %d active alerts — marking screenshot pending", len(state))
                     pending_screenshot = True
+                elif not state:
+                    log.info("📸 State changed but no active alerts — no screenshot needed")
+                elif not TELEGRAM_BOT_TOKEN:
+                    log.info("📸 State changed but no CLEARMAP_BOT_TOKEN — screenshot disabled")
 
             # Send pending screenshot once cooldown has elapsed
             now_ts = time.time()
-            if (pending_screenshot and TELEGRAM_BOT_TOKEN
-                    and now_ts - last_screenshot_time >= SCREENSHOT_COOLDOWN):
-                last_screenshot_time = now_ts
-                pending_screenshot = False
-                if state:
-                    state_snapshot = {k: v for k, v in state.items()}
-                    threading.Thread(
-                        target=capture_and_broadcast,
-                        args=(state_snapshot,),
-                        daemon=True,
-                    ).start()
+            if pending_screenshot and TELEGRAM_BOT_TOKEN:
+                time_since_last = now_ts - last_screenshot_time
+                if time_since_last >= SCREENSHOT_COOLDOWN:
+                    if state:
+                        log.info("📸 Cooldown elapsed (%.0fs since last) — triggering screenshot for %d alerts",
+                                 time_since_last, len(state))
+                        last_screenshot_time = now_ts
+                        pending_screenshot = False
+                        state_snapshot = {k: v for k, v in state.items()}
+                        threading.Thread(
+                            target=capture_and_broadcast,
+                            args=(state_snapshot,),
+                            daemon=True,
+                        ).start()
+                    else:
+                        log.info("📸 Cooldown elapsed but alerts cleared — cancelling pending screenshot")
+                        pending_screenshot = False
+                else:
+                    remaining = SCREENSHOT_COOLDOWN - time_since_last
+                    # Only log this every ~30s to avoid spam
+                    if int(remaining) % 30 == 0 or remaining > SCREENSHOT_COOLDOWN - 2:
+                        log.info("📸 Screenshot pending — cooldown remaining: %.0fs", remaining)
 
         except requests.exceptions.RequestException as e:
             log.error("HTTP error: %s", e)
