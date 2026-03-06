@@ -74,8 +74,7 @@ def _bidi_text(text: str) -> str:
 def _load_hebrew_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Try to load a Hebrew-capable font."""
     candidates = [
-        "public/NotoSansHebrew-Bold.ttf",
-        "../../clear-map/public/NotoSansHebrew-Bold.ttf",
+        "public/hebrew_font.ttf",
         # Windows
         "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/arial.ttf",
