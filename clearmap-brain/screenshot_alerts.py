@@ -214,6 +214,50 @@ def draw_legend(img: Image.Image, active_statuses: set[str], theme: str,
     return img
 
 
+def draw_uav_disclaimer(img: Image.Image, theme: str) -> Image.Image:
+    """Draw a disclaimer centered at the bottom about UAV predictions."""
+    w, h = img.size
+    
+    text = "* שימו לב: מיקומי כלי הטיס הם בגדר השערת המערכת בלבד ואין להתבסס עליהם."
+    visual_text = _bidi_text(text)
+    
+    font_size = max(11, int(w * 0.015))
+    font = _load_hebrew_font(font_size)
+    padding = int(w * 0.012)
+    
+    # Measure text width
+    dummy_draw = ImageDraw.Draw(img)
+    bbox = dummy_draw.textbbox((0, 0), visual_text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = int(font_size * 1.2)
+    
+    box_w = text_w + padding * 2
+    box_h = text_h + padding * 2
+    
+    # Position: bottom center
+    lx = (w - box_w) // 2
+    ly = h - box_h - int(w * 0.02)  # align with legend bottom padding
+    
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    
+    bg_color = (20, 20, 30, 200) if theme == "dark" else (30, 30, 40, 190)
+    overlay_draw.rounded_rectangle(
+        [lx, ly, lx + box_w, ly + box_h],
+        radius=int(w * 0.01),
+        fill=bg_color,
+    )
+    img = Image.alpha_composite(img.convert("RGBA"), overlay)
+    draw = ImageDraw.Draw(img)
+    
+    text_x = lx + padding
+    text_y = ly + padding + (box_h - padding*2 - text_h) // 2
+    
+    draw.text((text_x, text_y), visual_text, fill=(253, 224, 71, 230), font=font) # Yellow-300
+    
+    return img
+
+
 def hide_ui_overlays(page):
     """Inject CSS to hide all UI overlay elements, keeping only the map + polygons."""
     page.evaluate("""
@@ -322,6 +366,10 @@ def overlay_logo_and_crop(screenshot_path: Path, logo_path: Path, output_path: P
     # Draw legend overlay if we have active statuses
     if active_statuses:
         img = draw_legend(img, active_statuses, theme, counts=counts)
+        
+        # Add UAV disclaimer if UAVs are present
+        if "uav" in active_statuses:
+            img = draw_uav_disclaimer(img, theme)
 
     # Convert to RGB and save
     img = img.convert("RGB")

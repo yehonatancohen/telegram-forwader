@@ -854,8 +854,9 @@ _STATUS_EMOJI = {
     "pre_alert": "🟠", "after_alert": "⚫", "telegram_intel": "🔵",
 }
 _STATUS_LABEL = {
-    "alert": "התרעות", "uav": "כלי טיס", "terrorist": "חדירת מחבלים",
-    "pre_alert": "צפי", "after_alert": "הישארו בממ\"ד", "telegram_intel": "מודיעין",
+    "alert": "התרעות ירי רקטות וטילים", "uav": "התרעות חדירת כלי טיס עוין",
+    "terrorist": "חדירת מחבלים", "pre_alert": "התרעות מוקדמות",
+    "after_alert": "להישאר בממ\"ד", "telegram_intel": "מודיעין",
 }
 
 _screenshot_lock = threading.Lock()
