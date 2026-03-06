@@ -405,38 +405,11 @@ class UavTracker:
             # Initial speed estimate from distance and time
             track.speed_estimate = UAV_DEFAULT_SPEED_KMH
 
-            def _is_outside_borders(lat: float, lng: float) -> bool:
-                if lat > 33.15: return True # Lebanon border
-                if lat < 29.6: return True  # Eilat
-                if lng > 35.65: return True # Jordan/Syria border
-                if lng < 34.2: return True  # Sea
-                
-                # Coastline approx
-                coast_lng = 34.3 + (lat - 31.2) * 0.45
-                if lng < coast_lng: return True
-                
-                # Gaza
-                if 31.2 < lat < 31.6 and lng < 34.55: return True
-                return False
-
-            # Push the very first point backwards along the heading until it crosses the closest border
-            back_h = (track.heading + 180) % 360
-            fixed_first_lat, fixed_first_lng = first[0], first[1]
-            dist_pushed_km = 0.0
+            # The current true position is based on the elapsed time from the first centroid
+            _, _, proj_dist_from_first = _project_onto_line(raw_lat, raw_lng, first[0], first[1], track.heading)
             
-            for _ in range(200):  # Maximum 400km push
-                if _is_outside_borders(fixed_first_lat, fixed_first_lng):
-                    break
-                fixed_first_lat, fixed_first_lng = _project_point(fixed_first_lat, fixed_first_lng, back_h, 2.0)
-                dist_pushed_km += 2.0
-                
-            time_offset_s = (dist_pushed_km / UAV_DEFAULT_SPEED_KMH) * 3600
-            track.smoothed_points[0] = (fixed_first_lat, fixed_first_lng, first[2] - time_offset_s)
-
-            # The current true position is based on the elapsed time from the border point
-            total_time_from_border = now - track.smoothed_points[0][2]
-            current_dist = max((UAV_DEFAULT_SPEED_KMH / 3600) * total_time_from_border, 0.5)
-            new_lat, new_lng = _project_point(fixed_first_lat, fixed_first_lng, track.heading, current_dist)
+            current_dist = max(proj_dist_from_first, 0.5)
+            new_lat, new_lng = _project_point(first[0], first[1], track.heading, current_dist)
             track.smoothed_points.append((new_lat, new_lng, now))
         else:
             # 3+ observations — update heading (first→latest centroid for stability)
@@ -785,14 +758,6 @@ def update_state(
                 del state[city_he]
                 changed = True
             del incoming[city_he]
-
-    # ── Step 1c: Fast-drop UAVs immediately if Oref stopped tracking them ──
-    for city_he, cs in list(state.items()):
-        if cs.state == "uav" and city_he not in oref_cities:
-            log.info("👇 FAST DROP UAV: %s (Oref stopped alerting)", city_he)
-            cs.state = "after_alert"
-            cs.started_at = now
-            changed = True
 
     # ── Step 2: Process incoming signals ──────────────────────────────────
     for city_he, alert_type in incoming.items():
