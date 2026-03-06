@@ -56,14 +56,33 @@ def _bidi_text(text: str) -> str:
     """Convert Hebrew (RTL) text to visual order for Pillow rendering.
 
     Pillow draws text left-to-right. Hebrew logical order is right-to-left,
-    so we reverse the string to get correct visual display.
+    so we need to reorder for correct visual display.
     """
+    # Try python-bidi (API changed between versions)
     try:
         from bidi.algorithm import get_display
-        return get_display(text)
+        return get_display(text, base_dir='R')
     except ImportError:
-        # Fallback: simple reversal works for pure Hebrew strings
-        return text[::-1]
+        pass
+    try:
+        from bidi import get_display
+        return get_display(text, base_dir='R')
+    except ImportError:
+        pass
+
+    # Manual fallback: reverse word order and reverse each Hebrew word,
+    # but keep digit tokens (like "12") in their original character order.
+    import unicodedata
+    tokens = text.split(' ')
+    visual_tokens = []
+    for token in reversed(tokens):
+        if token and any(unicodedata.bidirectional(c) in ('R', 'AL', 'AN') for c in token):
+            # Hebrew/Arabic token — reverse characters for visual LTR rendering
+            visual_tokens.append(token[::-1])
+        else:
+            # LTR token (digits, latin, punctuation) — keep as-is
+            visual_tokens.append(token)
+    return ' '.join(visual_tokens)
 
 
 def _load_hebrew_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

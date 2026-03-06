@@ -997,17 +997,53 @@ def _bot_poller():
 
 
 def _build_caption(state: dict) -> str:
-    """Build a Hebrew caption summarising the active alert counts."""
-    from collections import Counter
-    counts = Counter(cs.state for cs in state.values())
-    parts = []
+    """Build a Hebrew caption with alert locations, times, and website link."""
+    from collections import defaultdict
+    from datetime import datetime
+
+    if not state:
+        return "אין התרעות פעילות"
+
+    # Group cities by status
+    groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for city_he, cs in state.items():
+        groups[cs.state].append((cs.city_name_he, cs.started_at))
+
+    lines = []
+    # Priority order for display
     for status in ("alert", "uav", "terrorist", "pre_alert", "after_alert", "telegram_intel"):
-        n = counts.get(status, 0)
-        if n:
+        cities = groups.get(status)
+        if not cities:
+            continue
+        emoji = _STATUS_EMOJI.get(status, "❓")
+        label = _STATUS_LABEL.get(status, status)
+        lines.append(f"{emoji} {len(cities)} {label}:")
+
+        # Sort by time (newest first) and list city names with time
+        cities.sort(key=lambda x: x[1], reverse=True)
+        for city_name, ts in cities:
+            t = datetime.fromtimestamp(ts).strftime("%H:%M")
+            lines.append(f"  • {city_name} ({t})")
+
+    lines.append("")
+    lines.append("🗺 clearmap.co.il")
+
+    caption = "\n".join(lines)
+
+    # Telegram photo captions are limited to 1024 characters
+    if len(caption) > 1024:
+        # Truncate city lists but keep the summary + link
+        summary_parts = []
+        for status in ("alert", "uav", "terrorist", "pre_alert", "after_alert", "telegram_intel"):
+            cities = groups.get(status)
+            if not cities:
+                continue
             emoji = _STATUS_EMOJI.get(status, "❓")
             label = _STATUS_LABEL.get(status, status)
-            parts.append(f"{emoji} {n} {label}")
-    return " | ".join(parts) if parts else "אין התרעות פעילות"
+            summary_parts.append(f"{emoji} {len(cities)} {label}")
+        caption = " | ".join(summary_parts) + "\n\n🗺 clearmap.co.il"
+
+    return caption
 
 
 def _send_photo_to_chat(chat_id: str, photo_path: Path, caption: str) -> bool:
